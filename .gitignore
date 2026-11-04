@@ -1,0 +1,15 @@
+/build/
+/install/
+/log/
+__pycache__/
+.pytest_cache/
+*.pyc
+maps/
+
+/.vscode/
+/src/scout_mini_sim/docs/
+/.pytest_cache/
+
+# 第三方文档中的大体积媒体文件，仅保留在本地
+/src/third_party/fast_lio_ros2/doc/*.gif
+/src/third_party/fast_lio_ros2/doc/*.pdf

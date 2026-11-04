@@ -1,0 +1,52 @@
+/**:
+    ros__parameters:
+        feature_extract_enable: false
+        point_filter_num: 1
+        max_iteration: 5
+        filter_size_surf: 0.2
+        filter_size_map: 0.2
+        # 局部地图边长，/2则为单边
+        cube_side_length: 200.0
+        runtime_pos_log_enable: false
+        map_file_path: "/home/lawrence/Desktop/scout_mini_ros2/maps/warehouse.pcd"
+
+        common:
+            lid_topic: "/scout/lidar/points_time"
+            imu_topic: "/imu/data"
+            time_sync_en: false
+            time_offset_lidar_to_imu: 0.0
+
+        preprocess:
+            lidar_type: 2            # Velodyne-style: x, y, z, intensity（反射率）, time, ring
+            scan_line: 16
+            scan_rate: 10
+            timestamp_unit: 0        # seconds; per-point values are ignored in instantaneous mode
+            instantaneous_scan: true # Gazebo GPU LiDAR publishes one instantaneous frame
+            blind: 0.3
+
+        mapping:
+            acc_cov: 0.1
+            gyr_cov: 0.1
+            b_acc_cov: 0.0001
+            b_gyr_cov: 0.0001
+            fov_degree: 360.0
+            # Local-map margin, not an Inf filter; match the simulated LiDAR range.
+            # Keep cube_side_length > 2 * 1.5 * det_range to avoid constant map eviction.
+            det_range: 8.0 # 探测距离，需要<cube_side_length/2 以保证窗口重叠
+            extrinsic_est_en: false # 是否在线估计 LiDAR 与 IMU 之间的外参（平移 + 旋转）
+            # lidar_3d_link -> imu_link
+            extrinsic_T: [0.05, 0.0, 0.30]
+            extrinsic_R: [1., 0., 0.,
+                          0., 1., 0.,
+                          0., 0., 1.]
+
+        publish:
+            path_en: true
+            map_en: true
+            scan_publish_en: true
+            dense_publish_en: false
+            scan_bodyframe_pub_en: true
+
+        pcd_save:
+            pcd_save_en: true
+            interval: -1             # -1: all frames in one file at shutdown

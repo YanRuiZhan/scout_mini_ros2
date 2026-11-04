@@ -1,0 +1,12 @@
+cmake_minimum_required(VERSION 3.8)
+project(scout_mini_navigation)
+
+find_package(ament_cmake REQUIRED)
+install(DIRECTORY launch config DESTINATION share/${PROJECT_NAME})
+install(FILES README.md DESTINATION share/${PROJECT_NAME})
+install(PROGRAMS scripts/pcd_to_grid.py DESTINATION lib/${PROJECT_NAME})
+if(BUILD_TESTING)
+  find_package(ament_cmake_pytest REQUIRED)
+  ament_add_pytest_test(pcd_to_grid test/test_pcd_to_grid.py)
+endif()
+ament_package()
