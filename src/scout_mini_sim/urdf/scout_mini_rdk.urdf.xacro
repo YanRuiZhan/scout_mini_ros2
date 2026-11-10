@@ -127,11 +127,8 @@
            These offsets restore the old frame: x_min -0.2482, y centred on 0. -->
       <origin xyz="-0.2481905 -0.2772031 0" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="package://scout_mini_sim/meshes/box_Link_sim.STL"/>
+        <mesh filename="package://scout_mini_sim/meshes/upper.dae"/>
       </geometry>
-      <material name="rdk_upper_gray">
-        <color rgba="0.65 0.65 0.65 1"/>
-      </material>
     </visual>
     <!-- Simplified body collision; RTK antenna collision boxes were removed. -->
     <collision>
@@ -213,7 +210,7 @@
   <joint name="camera_joint" type="fixed">
     <parent link="base_link"/>
     <child link="camera_link"/>
-    <origin xyz="0.27 -0.02 0.30" rpy="0 0 0"/>
+    <origin xyz="0.2222739 -0.0044991 0.0855002" rpy="0 0 0"/>
   </joint>
   <link name="camera_depth_frame"/>
   <joint name="camera_depth_joint" type="fixed">
