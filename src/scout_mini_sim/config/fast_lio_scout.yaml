@@ -6,7 +6,7 @@
         filter_size_surf: 0.2
         filter_size_map: 0.2
         # 局部地图边长，/2则为单边
-        cube_side_length: 200.0
+        cube_side_length: 300.0
         runtime_pos_log_enable: false
         map_file_path: "/home/lawrence/Desktop/Projects/scout_mini_ros2/maps/warehouse.pcd"
 
@@ -32,7 +32,7 @@
             fov_degree: 360.0
             # Local-map margin, not an Inf filter; match the simulated LiDAR range.
             # Keep cube_side_length > 2 * 1.5 * det_range to avoid constant map eviction.
-            det_range: 8.0 # 探测距离，需要<cube_side_length/2 以保证窗口重叠
+            det_range: 80.0 # 探测距离，需要<cube_side_length/2 以保证窗口重叠
             extrinsic_est_en: false # 是否在线估计 LiDAR 与 IMU 之间的外参（平移 + 旋转）
             # lidar_3d_link -> imu_link
             extrinsic_T: [0.05, 0.0, 0.30]

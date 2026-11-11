@@ -22,3 +22,16 @@ def test_detection_margin_covers_the_configured_lidar_range():
     model = ET.parse(ROOT / "urdf/scout_mini_rdk.urdf.xacro")
     maximum = float(model.find(".//sensor[@type='gpu_lidar']/lidar/range/max").text)
     assert params["mapping"]["det_range"] >= maximum > 0.0
+
+
+def test_physics_step_divides_lidar_and_imu_periods():
+    # Gazebo updates sensors only on physics steps. A period that is not a whole
+    # number of steps makes sample intervals alternate (e.g. 9/12 ms), which
+    # FAST-LIO integrates as uneven IMU dt and jittered LiDAR stamps.
+    world = ET.parse(ROOT / "worlds/warehouse.sdf")
+    step_ns = round(float(world.find(".//physics/max_step_size").text) * 1e9)
+    model = ET.parse(ROOT / "urdf/scout_mini_rdk.urdf.xacro")
+    for sensor_type in ("gpu_lidar", "imu"):
+        rate = float(model.find(f".//sensor[@type='{sensor_type}']/update_rate").text)
+        period_ns = round(1e9 / rate)
+        assert period_ns % step_ns == 0, (sensor_type, rate, step_ns)

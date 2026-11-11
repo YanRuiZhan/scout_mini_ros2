@@ -21,6 +21,10 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from sensor_msgs.msg import Imu, PointCloud2, PointField
 
+# 2 s of 200 Hz IMU. FAST-LIO integrates every sample, so a short queue that
+# overflows while a callback runs silently drops motion between LiDAR frames.
+IMU_QUEUE_DEPTH = 400
+
 # Layout produced by ign gazebo's PointCloudPacked for a gpu_lidar.
 # 雷达点共32byte数据 20-23字节为空，在其中写入time
 INPUT_STEP = 32
@@ -58,11 +62,12 @@ class LidarTimePad(Node):
         )
         self.imu_publisher = self.create_publisher(
             Imu, self.get_parameter("imu_output_topic").value,
-            QoSProfile(depth=5, reliability=ReliabilityPolicy.RELIABLE),
+            QoSProfile(depth=IMU_QUEUE_DEPTH, reliability=ReliabilityPolicy.RELIABLE),
         )
         self.imu_subscription = self.create_subscription(
             Imu, self.get_parameter("imu_input_topic").value,
-            self.imu_callback, qos_profile_sensor_data,
+            self.imu_callback,
+            QoSProfile(depth=IMU_QUEUE_DEPTH, reliability=ReliabilityPolicy.BEST_EFFORT),
         )
         self.warned_layout = False
         self.get_logger().info(f"padding {input_topic} -> {output_topic}")

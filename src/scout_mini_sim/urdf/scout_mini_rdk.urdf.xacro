@@ -190,11 +190,13 @@
             <max_angle>0.2617993877991494</max_angle>
           </vertical>
         </scan>
-        <!-- Keep valid returns inside the 10 m room. GPU LiDAR may still
-             encode rays with no hit as +/-Inf; FAST-LIO preprocessing drops them. -->
+        <!-- 80 m covers the ~60 x 30 m warehouse diagonal (~67 m); within this
+             closed building a longer range (Helios-16P: 150 m) returns the same
+             points. GPU LiDAR may still encode rays with no hit as +/-Inf;
+             FAST-LIO preprocessing drops them. -->
         <range>
           <min>0.2</min>
-          <max>8.0</max>
+          <max>80.0</max>
           <resolution>0.01</resolution>
         </range>
         <noise>
@@ -296,7 +298,8 @@
       <topic>/imu/data</topic>
       <ignition_frame_id>imu_link</ignition_frame_id>
       <always_on>true</always_on>
-      <update_rate>100</update_rate>
+      <!-- FAST-LIO recommends >= 200 Hz IMU; must divide the world's physics rate. -->
+      <update_rate>200</update_rate>
     </sensor>
   </gazebo>
 
