@@ -267,5 +267,57 @@
       <pose>-12 15 0 0 0 0</pose>
     </include> -->
 
+    <!-- ===== inspection targets (config/poi_warehouse_inspection.yaml) ===== -->
+    <include>
+      <name>poi_pg_w01</name>
+      <pose>7.650 -14.050 0 0 0 -3.1416</pose>
+      <uri>model://poi_pg_w01</uri>
+    </include>
+    <include>
+      <name>poi_ap_w01</name>
+      <pose>10.550 10.650 0 0 0 -3.1416</pose>
+      <uri>model://poi_ap_w01</uri>
+    </include>
+    <include>
+      <name>poi_lt_w01</name>
+      <pose>-9.250 11.150 0 0 0 1.5708</pose>
+      <uri>model://poi_lt_w01</uri>
+    </include>
+    <include>
+      <name>poi_pg_w02</name>
+      <pose>-2.150 10.550 0 0 0 -3.1416</pose>
+      <uri>model://poi_pg_w02</uri>
+    </include>
+    <include>
+      <name>poi_ap_w02</name>
+      <pose>-4.750 16.450 0 0 0 0.0000</pose>
+      <uri>model://poi_ap_w02</uri>
+    </include>
+    <include>
+      <name>poi_pg_w03</name>
+      <pose>7.350 -21.250 0 0 0 1.5708</pose>
+      <uri>model://poi_pg_w03</uri>
+    </include>
+    <include>
+      <name>poi_ap_w03</name>
+      <pose>0.350 -2.850 0 0 0 0.0419</pose>
+      <uri>model://poi_ap_w03</uri>
+    </include>
+    <include>
+      <name>poi_lt_w02</name>
+      <pose>8.250 -6.350 0 0 0 2.4988</pose>
+      <uri>model://poi_lt_w02</uri>
+    </include>
+    <include>
+      <name>poi_pg_w04</name>
+      <pose>-7.650 -18.450 0 0 0 1.5708</pose>
+      <uri>model://poi_pg_w04</uri>
+    </include>
+    <include>
+      <name>poi_ap_w04</name>
+      <pose>-10.950 20.650 0 0 0 -1.5708</pose>
+      <uri>model://poi_ap_w04</uri>
+    </include>
+
   </world>
 </sdf>

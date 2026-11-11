@@ -12,6 +12,7 @@ from launch.actions import DeclareLaunchArgument
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
@@ -20,6 +21,11 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument("rviz", default_value="true",
                               choices=["true", "false"]),
+        DeclareLaunchArgument(
+            "settle_time", default_value="1.0",
+            description="Seconds of LiDAR timestamps to wait before IMU initialization; "
+                        "keep the robot stationary during startup",
+        ),
         DeclareLaunchArgument(
             "connect_odom", default_value="true", choices=["true", "false"],
             description="Publish camera_init -> odom from time-aligned LIO/TF; "
@@ -32,6 +38,9 @@ def generate_launch_description():
             parameters=[{
                 "input_topic": "/scout/lidar/points",
                 "output_topic": "/scout/lidar/points_time",
+                "startup_delay_sec": ParameterValue(
+                    LaunchConfiguration("settle_time"), value_type=float,
+                ),
             }],
             output="screen",
         ),

@@ -8,11 +8,11 @@
         # 局部地图边长，/2则为单边
         cube_side_length: 200.0
         runtime_pos_log_enable: false
-        map_file_path: "/home/lawrence/Desktop/scout_mini_ros2/maps/warehouse.pcd"
+        map_file_path: "/home/lawrence/Desktop/Projects/scout_mini_ros2/maps/warehouse.pcd"
 
         common:
             lid_topic: "/scout/lidar/points_time"
-            imu_topic: "/imu/data"
+            imu_topic: "/scout/imu/data_settled" # startup-gated by lidar_time.py
             time_sync_en: false
             time_offset_lidar_to_imu: 0.0
 

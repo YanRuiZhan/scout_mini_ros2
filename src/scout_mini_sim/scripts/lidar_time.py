@@ -13,11 +13,13 @@ to prevent azimuth-based timing reconstruction. No point data is copied or
 reordered beyond adding the field.
 """
 
+import math
+
 import numpy as np
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
-from sensor_msgs.msg import PointCloud2, PointField
+from rclpy.qos import QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
+from sensor_msgs.msg import Imu, PointCloud2, PointField
 
 # Layout produced by ign gazebo's PointCloudPacked for a gpu_lidar.
 # 雷达点共32byte数据 20-23字节为空，在其中写入time
@@ -34,9 +36,19 @@ class LidarTimePad(Node):
         super().__init__("lidar_time_pad")
         self.declare_parameter("input_topic", "/scout/lidar/points")
         self.declare_parameter("output_topic", "/scout/lidar/points_time")
+        self.declare_parameter("startup_delay_sec", 1.0)
+        self.declare_parameter("imu_input_topic", "/imu/data")
+        self.declare_parameter("imu_output_topic", "/scout/imu/data_settled")
 
         input_topic = self.get_parameter("input_topic").value
         output_topic = self.get_parameter("output_topic").value
+        delay = self.get_parameter("startup_delay_sec").value
+        if not math.isfinite(delay) or delay < 0:
+            raise ValueError("startup_delay_sec must be finite and nonnegative")
+        self.startup_delay_ns = round(delay * 1_000_000_000)
+        self.first_stamp_ns = None
+        self.last_stamp_ns = None
+        self.startup_ready = False
 
         self.publisher = self.create_publisher(
             PointCloud2, output_topic, qos_profile_sensor_data
@@ -44,8 +56,21 @@ class LidarTimePad(Node):
         self.subscription = self.create_subscription(
             PointCloud2, input_topic, self.callback, qos_profile_sensor_data
         )
+        self.imu_publisher = self.create_publisher(
+            Imu, self.get_parameter("imu_output_topic").value,
+            QoSProfile(depth=5, reliability=ReliabilityPolicy.RELIABLE),
+        )
+        self.imu_subscription = self.create_subscription(
+            Imu, self.get_parameter("imu_input_topic").value,
+            self.imu_callback, qos_profile_sensor_data,
+        )
         self.warned_layout = False
         self.get_logger().info(f"padding {input_topic} -> {output_topic}")
+        if self.startup_delay_ns:
+            self.get_logger().info(
+                f"Waiting {delay:g} s of LiDAR timestamps for the robot to settle "
+                "before FAST-LIO initialization."
+            )
 
     def callback(self, msg: PointCloud2) -> None:
         if msg.point_step != INPUT_STEP or msg.width * msg.height == 0:
@@ -56,6 +81,28 @@ class LidarTimePad(Node):
                 )
                 self.warned_layout = True
             return
+
+        # FAST-LIO estimates gravity and an accelerometer scale from its first
+        # IMU batch. A robot falling onto the floor can corrupt that estimate.
+        # Gate both IMU and LiDAR: withholding only LiDAR would leave falling
+        # IMU samples buffered inside FAST-LIO for its first initialization batch.
+        # Use sensor timestamps so a slow/paused Gazebo cannot shorten the wait.
+        stamp_ns = msg.header.stamp.sec * 1_000_000_000 + msg.header.stamp.nanosec
+        if self.last_stamp_ns is not None and stamp_ns < self.last_stamp_ns:
+            self.first_stamp_ns = None
+            self.startup_ready = False
+            self.get_logger().warning(
+                "LiDAR clock moved backwards; restarting the settling delay. "
+                "Restart FAST-LIO after resetting the world to clear its old map."
+            )
+        self.last_stamp_ns = stamp_ns
+        if self.first_stamp_ns is None:
+            self.first_stamp_ns = stamp_ns
+        if stamp_ns - self.first_stamp_ns < self.startup_delay_ns:
+            return
+        if not self.startup_ready:
+            self.startup_ready = True
+            self.get_logger().info("Settling delay complete; forwarding LiDAR clouds.")
 
         # The padding bytes are not guaranteed to be zero by the sender.
         # FAST-LIO's instantaneous_scan mode ignores this field's values.
@@ -83,6 +130,17 @@ class LidarTimePad(Node):
         out.data = points.tobytes()
         self.publisher.publish(out)
 
+    def imu_callback(self, msg: Imu) -> None:
+        stamp_ns = msg.header.stamp.sec * 1_000_000_000 + msg.header.stamp.nanosec
+        if self.first_stamp_ns is None:
+            return
+        if stamp_ns < self.first_stamp_ns:
+            self.first_stamp_ns = None
+            self.startup_ready = False
+            return
+        if stamp_ns - self.first_stamp_ns >= self.startup_delay_ns:
+            self.imu_publisher.publish(msg)
+
 
 def main() -> None:
     rclpy.init()
@@ -93,7 +151,8 @@ def main() -> None:
         pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":

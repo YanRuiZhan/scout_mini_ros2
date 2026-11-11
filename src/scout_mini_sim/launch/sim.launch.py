@@ -14,16 +14,20 @@ import xacro
 
 def launch_sim(context):
     share = Path(get_package_share_directory("scout_mini_sim"))
-    cameras = LaunchConfiguration("cameras").perform(context).lower() == "false"
+    cameras = LaunchConfiguration("cameras").perform(context).lower() == "true"
     robot_description = xacro.process_file(
         str(share / "urdf" / "scout_mini_rdk.urdf.xacro"),
         mappings={"enable_cameras": "true" if cameras else "false"},
     ).toxml()
     gui = LaunchConfiguration("gui").perform(context).lower() == "true"
     world = LaunchConfiguration("world").perform(context)
+    world_models = Path(world).resolve().parent / "models"
     # Fortress resolves package:// URIs relative to the parent of a package share.
     resource_env = {
-        name: os.pathsep.join(filter(None, [str(share.parent), os.environ.get(name)]))
+        name: os.pathsep.join(filter(None, [
+            str(world_models) if world_models.is_dir() else None,
+            str(share.parent), os.environ.get(name),
+        ]))
         for name in ("IGN_GAZEBO_RESOURCE_PATH", "GZ_SIM_RESOURCE_PATH")
     }
     gazebo_args = ["ign", "gazebo", "-r", "-v", "3", world]
@@ -89,15 +93,22 @@ def generate_launch_description():
                         "lidar and IMU at full rate (e.g. when running FAST-LIO)",
         ),
         DeclareLaunchArgument(
-            "world", default_value=str(share / "worlds" / "warehouse.sdf"),
+            "world", default_value=str(
+                share / "worlds" / "warehouse.sdf"
+            ),
             description="World SDF with the physics, scene, sensor and IMU systems",
         ),
-        DeclareLaunchArgument("x", default_value="0.0"),
-        DeclareLaunchArgument("y", default_value="0.0"),
+        # Warehouse's south doorway is centered at x=0 on the y=-25 wall.
+        # Spawn inside the doorway and face +Y into the warehouse.
+        DeclareLaunchArgument("x", default_value="0.0",
+                              description="Spawn X; default is the warehouse doorway centreline"),
+        DeclareLaunchArgument("y", default_value="-22.5",
+                              description="Spawn Y; default is 2.5 m inside the south doorway"),
         DeclareLaunchArgument(
             "z", default_value="0.02",
             description="Initial base_footprint height above the ground (m)",
         ),
-        DeclareLaunchArgument("yaw", default_value="0.0"),
+        DeclareLaunchArgument("yaw", default_value="1.5707963267948966",
+                              description="Spawn heading in radians; +pi/2 faces into the warehouse"),
         OpaqueFunction(function=launch_sim),
     ])

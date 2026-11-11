@@ -57,18 +57,33 @@ def read_xyz(path):
 
 
 def project(xyz, resolution, ground_z, ground_tolerance, min_height, max_height,
-            min_points=2, padding=0.5):
-    """Unknown=205, free=254, occupied=0; obstacle evidence wins."""
-    values = [resolution, ground_z, ground_tolerance, min_height, max_height, padding]
+            min_points=2, padding=0.5, sensor_height=None,
+            sensor_tolerance=0.08):
+    """Project floor and a height band into a Nav2 grid.
+
+    ``sensor_height`` is the lidar height above the selected ground datum. If
+    supplied, returns from min_height through that height plus the tolerance
+    count as obstacles. This is not a substitute for the actual vehicle height.
+    """
+    values = [resolution, ground_z, ground_tolerance, min_height, max_height,
+              padding, sensor_tolerance]
+    if sensor_height is not None:
+        values.append(sensor_height)
     if not np.isfinite(values).all():
         raise ValueError("All projection parameters must be finite")
-    if resolution <= 0 or ground_tolerance <= 0 or padding < 0 or min_points < 1:
+    if resolution <= 0 or ground_tolerance <= 0 or sensor_tolerance <= 0 \
+            or padding < 0 or min_points < 1:
         raise ValueError("Invalid resolution, tolerance, padding or point threshold")
     if not ground_tolerance < min_height < max_height:
         raise ValueError("Require ground_tolerance < min_height < max_height")
     relative_z = xyz[:, 2] - ground_z
     floor = np.abs(relative_z) <= ground_tolerance
-    obstacle = (relative_z >= min_height) & (relative_z <= max_height)
+    if sensor_height is None:
+        obstacle = (relative_z >= min_height) & (relative_z <= max_height)
+    else:
+        if not min_height <= sensor_height <= max_height:
+            raise ValueError("sensor_height must be within min_height and max_height")
+        obstacle = (relative_z >= min_height) & (relative_z <= sensor_height + sensor_tolerance)
     selected = floor | obstacle
     if not floor.any() or not obstacle.any():
         raise ValueError("No floor or obstacle evidence; check ground and height parameters")
@@ -120,6 +135,14 @@ def main():
     parser.add_argument("--ground-tolerance", type=float, default=0.08)
     parser.add_argument("--min-height", type=float, default=0.15)
     parser.add_argument("--max-height", type=float, default=1.8)
+    parser.add_argument(
+        "--sensor-height", type=float, default=0.5,
+        help="Lidar height above ground; upper limit for obstacle projection (default: 0.5 m)",
+    )
+    parser.add_argument(
+        "--sensor-tolerance", type=float, default=0.08,
+        help="Margin above lidar height (default: 0.08 m)",
+    )
     parser.add_argument("--min-points", type=int, default=2)
     parser.add_argument("--padding", type=float, default=0.5)
     args = parser.parse_args()
@@ -128,6 +151,7 @@ def main():
         grid, origin = project(
             xyz, args.resolution, args.ground_z, args.ground_tolerance,
             args.min_height, args.max_height, args.min_points, args.padding,
+            args.sensor_height, args.sensor_tolerance,
         )
         paths = save_map(args.output, grid, origin, args.resolution)
     except (ValueError, OSError, KeyError) as exc:

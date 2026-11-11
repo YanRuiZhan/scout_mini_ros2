@@ -1,0 +1,47 @@
+# Surface centers and outward normals for the inspection models in warehouse.sdf.
+# Coordinates are in the Gazebo world frame, NOT a FAST-LIO PCD map frame.
+# Supply --poi-transform TX TY YAW to express these points in Nav2's map frame.
+# The target point is on each
+# model's front face (local -Y), with its model yaw applied.
+frame_id: world
+pois:
+  - id: PG-W01
+    type: pressure_gauge
+    target: {x: 7.650, y: -13.998}
+    normal: {x: 0.0, y: 1.0}
+  - id: AP-W01
+    type: access_panel
+    target: {x: 10.550, y: 10.902}
+    normal: {x: 0.0, y: 1.0}
+  - id: LT-W01
+    type: level_tank
+    target: {x: -8.578, y: 11.150}
+    normal: {x: 1.0, y: 0.0}
+  - id: PG-W02
+    type: pressure_gauge
+    target: {x: -2.150, y: 10.602}
+    normal: {x: 0.0, y: 1.0}
+  - id: AP-W02
+    type: access_panel
+    target: {x: -4.750, y: 16.198}
+    normal: {x: 0.0, y: -1.0}
+  - id: PG-W03
+    type: pressure_gauge
+    target: {x: 7.402, y: -21.250}
+    normal: {x: 1.0, y: 0.0}
+  - id: AP-W03
+    type: access_panel
+    target: {x: 0.361, y: -3.102}
+    normal: {x: 0.0419, y: -0.9991}
+  - id: LT-W02
+    type: level_tank
+    target: {x: 8.653, y: -5.812}
+    normal: {x: 0.598, y: 0.801}
+  - id: PG-W04
+    type: pressure_gauge
+    target: {x: -7.598, y: -18.450}
+    normal: {x: 1.0, y: 0.0}
+  - id: AP-W04
+    type: access_panel
+    target: {x: -11.202, y: 20.650}
+    normal: {x: -1.0, y: 0.0}

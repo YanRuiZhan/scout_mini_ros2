@@ -131,6 +131,11 @@ if(BUILD_TESTING)
   target_include_directories(test_preprocess PRIVATE src ${PCL_INCLUDE_DIRS})
   target_link_libraries(test_preprocess ${PCL_LIBRARIES})
   ament_target_dependencies(test_preprocess rclcpp sensor_msgs pcl_conversions livox_ros_driver2)
+
+  ament_add_gtest(test_mapping_pipeline test/test_mapping_pipeline.cpp)
+  target_include_directories(test_mapping_pipeline PRIVATE src include ${PCL_INCLUDE_DIRS})
+  target_link_libraries(test_mapping_pipeline ${PCL_LIBRARIES} Eigen3::Eigen ${cpp_typesupport_target})
+  ament_target_dependencies(test_mapping_pipeline rclcpp nav_msgs sensor_msgs pcl_conversions)
 endif()
 
 ament_package()

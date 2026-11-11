@@ -41,3 +41,20 @@ def test_image_flip_and_no_overwrite(tmp_path):
 def test_invalid_height_band():
     with pytest.raises(ValueError, match="ground_tolerance"):
         grid_tool.project(np.array([[0, 0, 0]]), 0.05, 0, 0.2, 0.1, 1.0)
+
+
+def test_sensor_height_includes_lower_obstacles():
+    xyz = np.array([
+        [0.0, 0.0, 0.0],
+        [0.0, 0.0, 0.5],
+        [1.0, 0.0, 0.2],
+        [2.0, 0.0, 0.0],
+        [1.5, 0.0, 0.8],
+    ])
+    grid, _ = grid_tool.project(
+        xyz, 0.1, 0.0, 0.05, 0.15, 1.8, 1, 0,
+        sensor_height=0.5, sensor_tolerance=0.05,
+    )
+    assert grid[0, 0] == 0
+    assert grid[0, 10] == 0
+    assert grid[0, 15] == 205

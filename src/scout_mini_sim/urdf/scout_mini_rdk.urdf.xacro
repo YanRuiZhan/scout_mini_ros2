@@ -258,7 +258,7 @@
         </image>
         <clip>
           <near>0.2</near>
-          <far>10.0</far>
+          <far>100.0</far>
         </clip>
       </camera>
     </sensor>
@@ -319,8 +319,8 @@
       <odom_publish_frequency>50</odom_publish_frequency>
       <frame_id>odom</frame_id>
       <child_frame_id>base_footprint</child_frame_id>
-      <max_linear_velocity>1.5</max_linear_velocity>
-      <max_angular_velocity>2.0</max_angular_velocity>
+      <max_linear_velocity>3.0</max_linear_velocity>
+      <max_angular_velocity>0.40</max_angular_velocity>
     </plugin>
     <plugin filename="ignition-gazebo-joint-state-publisher-system"
             name="ignition::gazebo::systems::JointStatePublisher">
