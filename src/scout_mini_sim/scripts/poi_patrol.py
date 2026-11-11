@@ -164,11 +164,14 @@ def run(args, pois):
     from geometry_msgs.msg import PoseStamped, Twist
     from nav2_simple_commander.robot_navigator import BasicNavigator, TaskResult
     from rclpy.qos import qos_profile_sensor_data
+    from rclpy.signals import SignalHandlerOptions
     from rclpy.time import Time
     from sensor_msgs.msg import Image
     from tf2_ros import Buffer, TransformException, TransformListener
 
-    rclpy.init(args=["--ros-args", "-p", f"use_sim_time:={str(args.use_sim_time).lower()}"])
+    # 保留 Python 的 KeyboardInterrupt，让 finally 能在 ROS context 关闭前取消目标。
+    rclpy.init(args=["--ros-args", "-p", f"use_sim_time:={str(args.use_sim_time).lower()}"],
+               signal_handler_options=SignalHandlerOptions.NO)
     nav = None
     rows = []
     log_path = None
@@ -295,13 +298,15 @@ def run(args, pois):
     finally:
         if nav is not None:
             try:
-                if task_active and rclpy.ok():
-                    nav.cancelTask()
-                if motion_started and rclpy.ok():
-                    # Gazebo 底盘没有命令超时；停止前需先取消本脚本的导航目标。
-                    for _ in range(3):
-                        stop_pub.publish(Twist())
-                        rclpy.spin_once(nav, timeout_sec=0.05)
+                try:
+                    if task_active and rclpy.ok():
+                        nav.cancelTask()
+                finally:
+                    if motion_started and rclpy.ok():
+                        # Gazebo 底盘没有命令超时；取消本脚本目标后显式停车。
+                        for _ in range(3):
+                            stop_pub.publish(Twist())
+                            rclpy.spin_once(nav, timeout_sec=0.05)
             finally:
                 nav.destroy_node()
         if rclpy.ok():
