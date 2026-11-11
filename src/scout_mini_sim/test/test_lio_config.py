@@ -35,3 +35,31 @@ def test_physics_step_divides_lidar_and_imu_periods():
         rate = float(model.find(f".//sensor[@type='{sensor_type}']/update_rate").text)
         period_ns = round(1e9 / rate)
         assert period_ns % step_ns == 0, (sensor_type, rate, step_ns)
+
+
+def test_degenerate_plane_guard_scales_with_the_map_resolution():
+    # The guard rejects matches whose map neighbours are collinear. The most
+    # compact real patch in a voxel map (3 + 2 points on adjacent rows) spreads
+    # 0.45 voxels across, so a larger threshold would reject valid planes too.
+    params = yaml.safe_load((ROOT / "config/fast_lio_scout.yaml").read_text())
+    params = params["/**"]["ros__parameters"]
+    spread = params["mapping"]["plane_min_spread"]
+    assert 0.0 < spread < 0.4 * params["filter_size_map"]
+
+
+def test_level_constraint_is_tight_enough_to_act():
+    # Each scan constrains attitude to a few millidegrees; a looser
+    # pseudo-measurement is outvoted and the map still tilts.
+    params = yaml.safe_load((ROOT / "config/fast_lio_scout.yaml").read_text())
+    mapping = params["/**"]["ros__parameters"]["mapping"]
+    assert mapping["level_constraint_en"] is True
+    assert 0.0 < mapping["level_constraint_std_deg"] <= 0.01
+
+
+def test_imu_bridge_queue_survives_a_one_second_stall():
+    bridge = yaml.safe_load((ROOT / "config/bridge.yaml").read_text())
+    imu = next(entry for entry in bridge if entry["ros_topic_name"] == "/imu/data")
+    model = ET.parse(ROOT / "urdf/scout_mini_rdk.urdf.xacro")
+    rate = float(model.find(".//sensor[@type='imu']/update_rate").text)
+    assert imu["publisher_queue"] >= rate
+    assert imu["subscriber_queue"] >= rate

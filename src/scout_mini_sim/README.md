@@ -47,6 +47,24 @@ ros2 launch scout_mini_sim lio.launch.py
 建图启动后保持小车静止，等日志出现 `IMU Initial Done` 再行驶。`settle_time` 控制转发点云前的等待时长，按传感器时间计算；低帧率或暂停仿真不会提前结束等待。需要更长落地时间时可使用 `ros2 launch scout_mini_sim lio.launch.py settle_time:=2.0`。重启或重置 Gazebo 后，也应重启 FAST-LIO，清除上一轮地图。
 
 
+### 地图倾斜 / Z 漂移
+
+16 线雷达在十米以外的墙面上只留下稀疏的水平线。FAST-LIO 用 5 个最近的地图点拟合平面，这些点几乎共线时，平面方向由测距噪声决定，结果近似水平面而不是墙面。行驶中这些错误的约束把 roll/pitch 持续拉偏（沿行驶方向“抬头”），地面被建成斜坡，零偏和重力估计随之被带偏。`config/fast_lio_scout.yaml` 用两个参数处理：
+
+| 参数 | 作用 |
+|---|---|
+| `mapping.plane_min_spread` | 近邻点在第二主轴方向的展开小于该值（米）时丢弃此匹配，去掉共线近邻。需小于 `0.4 * filter_size_map`；`0.0` 关闭 |
+| `mapping.level_constraint_en`、`mapping.level_constraint_std_deg` | 伪观测，使 roll/pitch 保持启动时的值。只适用于单一平整地面，有坡道或用于实车时关闭 |
+
+FAST-LIO 每帧把状态写入 `fast_lio_ros2/Log/mat_pre.txt`（每次启动覆盖）。平整地面上真值已知，可直接检查一次建图：
+
+```zsh
+ros2 run scout_mini_sim lio_state_check.py src/third_party/fast_lio_ros2/Log/mat_pre.txt
+```
+
+输出各状态的漂移、倾斜在静止 / 直行 / 转弯时各增长多少，以及是否满足验收阈值（roll、pitch < 0.3°，陀螺零偏 < 10 mdeg/s，加速度计零偏 < 0.02 m/s²，Z 坡度 < 0.1°）。日志若出现 `IMU gap of ...` 警告，说明 IMU 样本在到达 FAST-LIO 之前已丢失，检查 `config/bridge.yaml` 中 `/imu/data` 的队列深度。
+
+
 ### 里程计和 TF
 
 仿真会发布轮式里程计 `/odom` 和 TF `odom → base_footprint`。FAST-LIO2 会发布 `/Odometry` 和 TF `camera_init → body`。`lio_odom_bridge` 再发布 `camera_init → odom`，把两棵 TF 树连接起来；它不会融合两路里程计，也不提供已保存地图的重定位。

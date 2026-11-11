@@ -49,6 +49,10 @@
   gz_type_name: ignition.msgs.IMU
   direction: GZ_TO_ROS
   qos_profile: SENSOR_DATA
+  # FAST-LIO integrates every IMU sample. The default depth of 10 holds only
+  # 50 ms at 200 Hz, less than one stall of the software-rendered sensors.
+  publisher_queue: 400
+  subscriber_queue: 400
 
 - ros_topic_name: /camera/color/image_raw
   gz_topic_name: /camera/color/image
