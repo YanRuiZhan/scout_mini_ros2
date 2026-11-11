@@ -46,6 +46,8 @@
 #include <Eigen/Core>
 #include "IMU_Processing.hpp"
 #include "map_accumulator.hpp"
+#include "match_constraints.hpp"
+#include "imu_gap_monitor.hpp"
 #include <nav_msgs/msg/odometry.hpp>
 #include <nav_msgs/msg/path.hpp>
 #include <visualization_msgs/msg/marker.hpp>
@@ -103,10 +105,18 @@ struct MatchDiagnostics
     int insufficient_neighbors = 0;
     int too_far = 0;
     int plane_fit_failed = 0;
+    int degenerate_neighbors = 0;
     int residual_rejected = 0;
 };
 MatchDiagnostics match_diagnostics;
 bool match_diagnostics_en = false;
+// Reject a match whose map neighbours do not span a plane (see match_constraints.hpp).
+// Metres; 0 disables the check and keeps upstream behaviour.
+double plane_min_spread = 0.0;
+// Flat-floor pseudo-measurement holding roll/pitch at their initial value.
+bool   level_constraint_en = false;
+double level_constraint_std = 0.0;   // radians, per LiDAR update
+ImuGapMonitor imu_gap_monitor;
 bool   point_selected_surf[100000] = {0};
 bool   lidar_pushed, flg_first_scan = true, flg_exit = false, flg_EKF_inited;
 bool   scan_pub_en = false, dense_pub_en = false, scan_body_pub_en = false;
@@ -375,6 +385,18 @@ void imu_cbk(const sensor_msgs::msg::Imu::UniquePtr msg_in)
     }
 
     double timestamp = get_time_sec(msg->header.stamp);
+
+    // Samples lost upstream cannot be recovered here; make the loss visible.
+    const double imu_gap = imu_gap_monitor.update(timestamp);
+    if (imu_gap > 0.0)
+    {
+        static rclcpp::Clock throttle_clock(RCL_STEADY_TIME);
+        RCLCPP_WARN_THROTTLE(rclcpp::get_logger("laser_mapping"), throttle_clock, 5000,
+            "IMU gap of %.1f ms (nominal period %.1f ms). So far: %zu gaps, ~%zu samples lost, longest %.1f ms. "
+            "Check the queue depth and QoS of every publisher on the IMU path.",
+            imu_gap * 1e3, imu_gap_monitor.nominal_period() * 1e3, imu_gap_monitor.gaps(),
+            imu_gap_monitor.lost_samples(), imu_gap_monitor.max_gap() * 1e3);
+    }
 
     mtx_buffer.lock();
 
@@ -739,7 +761,11 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
 
         VF(4) pabcd;
         point_selected_surf[i] = false;
-        if (esti_plane(pabcd, points_near, 0.1f))
+        if (plane_min_spread > 0.0 && neighbor_cross_spread(points_near, NUM_MATCH_POINTS) < plane_min_spread)
+        {
+            match_diagnostics.degenerate_neighbors++;
+        }
+        else if (esti_plane(pabcd, points_near, 0.1f))
         {
             float pd2 = pabcd(0) * point_world.x + pabcd(1) * point_world.y + pabcd(2) * point_world.z + pabcd(3);
             float s = 1 - 0.9 * fabs(pd2) / sqrt(p_body.norm());
@@ -790,8 +816,9 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
     double solve_start_  = omp_get_wtime();
     
     /*** Computation of Measuremnt Jacobian matrix H and measurents vector ***/
-    ekfom_data.h_x = MatrixXd::Zero(effct_feat_num, 12); //23
-    ekfom_data.h.resize(effct_feat_num);
+    const int level_rows = level_constraint_en ? LEVEL_CONSTRAINT_ROWS : 0;
+    ekfom_data.h_x = MatrixXd::Zero(effct_feat_num + level_rows, 12); //23
+    ekfom_data.h.resize(effct_feat_num + level_rows);
 
     for (int i = 0; i < effct_feat_num; i++)
     {
@@ -823,6 +850,11 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
         /*** Measuremnt: distance to the closest surface/corner ***/
         ekfom_data.h(i) = -norm_p.intensity;
     }
+    if (level_constraint_en)
+    {
+        write_level_constraint(s.rot.toRotationMatrix(), LASER_POINT_COV, level_constraint_std,
+                               effct_feat_num, ekfom_data.h_x, ekfom_data.h);
+    }
     solve_time += omp_get_wtime() - solve_start_;
 }
 
@@ -849,6 +881,9 @@ public:
         this->declare_parameter<double>("cube_side_length", 200.);
         this->declare_parameter<float>("mapping.det_range", 300.);
         this->declare_parameter<bool>("mapping.debug_match_stats", false);
+        this->declare_parameter<double>("mapping.plane_min_spread", 0.0);
+        this->declare_parameter<bool>("mapping.level_constraint_en", false);
+        this->declare_parameter<double>("mapping.level_constraint_std_deg", 0.005);
         this->declare_parameter<double>("mapping.fov_degree", 180.);
         this->declare_parameter<double>("mapping.gyr_cov", 0.1);
         this->declare_parameter<double>("mapping.acc_cov", 0.1);
@@ -887,6 +922,16 @@ public:
         this->get_parameter_or<double>("cube_side_length",cube_len,200.f);
         this->get_parameter_or<float>("mapping.det_range",DET_RANGE,300.f);
         this->get_parameter_or<bool>("mapping.debug_match_stats", match_diagnostics_en, false);
+        this->get_parameter_or<double>("mapping.plane_min_spread", plane_min_spread, 0.0);
+        this->get_parameter_or<bool>("mapping.level_constraint_en", level_constraint_en, false);
+        double level_constraint_std_deg = 0.005;
+        this->get_parameter_or<double>("mapping.level_constraint_std_deg", level_constraint_std_deg, 0.005);
+        if (level_constraint_en && !(level_constraint_std_deg > 0.0))
+        {
+            RCLCPP_WARN(this->get_logger(), "mapping.level_constraint_std_deg must be positive; level constraint disabled.");
+            level_constraint_en = false;
+        }
+        level_constraint_std = level_constraint_std_deg * PI_M / 180.0;
         this->get_parameter_or<double>("mapping.fov_degree",fov_deg,180.f);
         this->get_parameter_or<double>("mapping.gyr_cov",gyr_cov,0.1);
         this->get_parameter_or<double>("mapping.acc_cov",acc_cov,0.1);
@@ -909,6 +954,8 @@ public:
         this->get_parameter_or<vector<double>>("mapping.extrinsic_R", extrinR, vector<double>());
 
         RCLCPP_INFO(this->get_logger(), "p_pre->lidar_type %d", p_pre->lidar_type);
+        RCLCPP_INFO(this->get_logger(), "plane_min_spread %.3f m, level constraint %s (std %.4f deg)",
+                    plane_min_spread, level_constraint_en ? "on" : "off", level_constraint_std_deg);
 
         path.header.stamp = this->get_clock()->now();
         path.header.frame_id ="camera_init";
@@ -1092,11 +1139,11 @@ private:
             if (match_diagnostics_en)
             {
                 RCLCPP_INFO(this->get_logger(),
-                    "match_diag down=%d queries=%d not_converged=%d few_neighbors=%d too_far=%d plane_fail=%d residual_reject=%d effective=%d",
+                    "match_diag down=%d queries=%d not_converged=%d few_neighbors=%d too_far=%d plane_fail=%d degenerate=%d residual_reject=%d effective=%d",
                     feats_down_size, match_diagnostics.searches, match_diagnostics.not_converged,
                     match_diagnostics.insufficient_neighbors, match_diagnostics.too_far,
-                    match_diagnostics.plane_fit_failed, match_diagnostics.residual_rejected,
-                    effct_feat_num);
+                    match_diagnostics.plane_fit_failed, match_diagnostics.degenerate_neighbors,
+                    match_diagnostics.residual_rejected, effct_feat_num);
             }
             state_point = kf.get_x();
             euler_cur = SO3ToEuler(state_point.rot);

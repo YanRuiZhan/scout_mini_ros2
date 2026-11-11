@@ -136,6 +136,11 @@ if(BUILD_TESTING)
   target_include_directories(test_mapping_pipeline PRIVATE src include ${PCL_INCLUDE_DIRS})
   target_link_libraries(test_mapping_pipeline ${PCL_LIBRARIES} Eigen3::Eigen ${cpp_typesupport_target})
   ament_target_dependencies(test_mapping_pipeline rclcpp nav_msgs sensor_msgs pcl_conversions)
+
+  # Eigen-only guards of the scan-matching model; no ROS or PCL needed.
+  ament_add_gtest(test_match_constraints test/test_match_constraints.cpp)
+  target_include_directories(test_match_constraints PRIVATE include)
+  target_link_libraries(test_match_constraints Eigen3::Eigen)
 endif()
 
 ament_package()
