@@ -1,4 +1,4 @@
-# Scout Mini 导航仿真（初始配置）
+# Scout Mini 导航仿真
 
 ROS 2 Humble / Gazebo Fortress。复用 `scout_mini_sim` 的 `/scan`、`/odom`、
 `/cmd_vel` 和 `odom → base_footprint`，所有导航节点使用仿真时间。
@@ -45,13 +45,10 @@ source install/setup.zsh
 障碍物上表面/内部可能仍为未知。不要直接全局填洞或打开未知区通行来掩盖问题。
 后续可结合建图轨迹/原始扫描做射线重建，或在核实场景后采用受限的地面插补。
 
-必须启动与 PCD 对应的 Gazebo 场景；默认 `scout_mini.sdf` 不一定是 room_03 的建图场景。
-导航时关闭 SLAM Toolbox，以 AMCL 管理全局定位；FAST-LIO 只作为里程计运行
-（`mapping:=false`），启动后保持小车静止直到出现 `IMU Initial Done`：
+必须启动与 PCD 对应的 Gazebo 场景。导航时关闭 SLAM Toolbox，以 AMCL 管理全局定位：
 
 ```zsh
-ros2 launch scout_mini_sim lio.launch.py mapping:=false rviz:=false
-ros2 launch scout_mini_navigation navigation.launch.py map:=/绝对路径/maps/room_03_grid.yaml
+prime-run ros2 launch scout_mini_navigation navigation.launch.py map:=/绝对路径/maps/room_03_grid.yaml
 ```
 
 先设置 **2D Pose Estimate** 并检查激光与地图是否对齐，再进行小范围导航测试。
@@ -85,12 +82,17 @@ ros2 run nav2_map_server map_saver_cli -f maps/scout_mini --ros-args -p use_sim_
 
 ## 使用已有地图导航
 
-保留仿真，停止上面的建图导航 launch，启动 FAST-LIO 里程计（保持静止直到
-`IMU Initial Done`）后再启动导航：
+保留仿真，停止上面的建图导航 launch，再启动导航（`prime-run` 让 RViz 使用独显，
+单显卡电脑可省略）：
+
+```zsh
+prime-run ros2 launch scout_mini_navigation navigation.launch.py map:=/绝对路径/maps/scout_mini.yaml
+```
+
+可选：在启动导航前运行 FAST-LIO 里程计，启动后保持小车静止直到出现 `IMU Initial Done`：
 
 ```zsh
 ros2 launch scout_mini_sim lio.launch.py mapping:=false rviz:=false
-ros2 launch scout_mini_navigation navigation.launch.py map:=/绝对路径/maps/scout_mini.yaml
 ```
 
 在 RViz 中先用 **2D Pose Estimate** 指定小车当前位姿，确认激光与地图对齐，
@@ -104,8 +106,8 @@ ros2 launch scout_mini_navigation navigation.launch.py map:=/绝对路径/maps/s
   保留 Humble 的插件名称和行为树插件列表。
 - 全局坐标系 `map`，局部坐标系 `odom`，底盘参考系 `base_footprint`。
 - 定位：AMCL（2D 激光匹配先验栅格地图）发布 `map → odom`；`odom → base_footprint`
-  来自 `scout_mini_sim` 的 EKF（FAST-LIO2 位姿 + 轮速 + IMU 陀螺仪），不受车轮打滑影响。
-  不启动 FAST-LIO 也能导航，但里程计退化为轮速 + IMU，位置会逐渐漂移。
+  来自 `scout_mini_sim` 的 EKF（轮速 + IMU 陀螺仪，可选融合 FAST-LIO2 位姿），
+  航向由陀螺仪测量，转弯打滑时仍准确。
   AMCL 每移动 `0.1 m` 或转动 `0.1 rad` 更新一次。
 - 初始保守矩形 footprint 为 `0.66 × 0.60 m`（覆盖底盘与车轮），另加 `0.02 m` padding；
   线速度上限 `1.0 m/s`（加减速 `1.0 m/s²`），角速度上限 `0.8 rad/s`（全速时最小转弯半径约 1.25 m）。这些不是实车标定参数。
@@ -125,4 +127,4 @@ ros2 launch scout_mini_navigation navigation.launch.py map:=/绝对路径/maps/s
 ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist '{}'
 ```
 
-本包是初始接线与参数配置，仍需在 Gazebo 中验证定位、目标到达、避障与停车行为。
+以上配置已在 Gazebo 仓库场景中验证 POI 巡检可用；参数未在实车上标定。

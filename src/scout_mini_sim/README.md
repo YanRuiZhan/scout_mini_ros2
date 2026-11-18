@@ -9,7 +9,8 @@
 ```zsh
 source /opt/ros/humble/setup.zsh
 rosdep install --from-paths src/scout_mini_sim src/third_party/fast_lio_ros2 --ignore-src -r -y
-colcon build --symlink-install --packages-select scout_mini_sim fast_lio \ --cmake-args -DPython3_EXECUTABLE=/usr/bin/python3
+colcon build --symlink-install --packages-select scout_mini_sim fast_lio \
+  --cmake-args -DPython3_EXECUTABLE=/usr/bin/python3
 source install/setup.zsh
 ```
 
@@ -37,6 +38,28 @@ ros2 launch scout_mini_sim sim.launch.py gui:=false
 此时 CPU 很容易被占满，表现为 FAST-LIO 报 `IMU gap`、EKF 报 `Failed to meet update rate`、
 代价地图丢弃激光帧，定位和导航随之变差。巡检时建议加 `gui:=false` 关闭 Gazebo 窗口，
 导航 RViz 也会占用不少 CPU。Gazebo 窗口右下角的 RTF 低于 0.8 时，应先降低负载。
+
+Intel + NVIDIA 双显卡笔记本默认用核显。用 `prime-run` 包住 launch 命令即可让 Gazebo
+（及其启动的所有子进程）使用独显，`nvidia-smi` 中会出现 `ruby` 进程：
+
+```zsh
+prime-run ros2 launch scout_mini_sim sim.launch.py
+```
+
+没有 `prime-run` 命令时，在同一终端设置等效的环境变量后再启动：
+
+```zsh
+export __NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia
+```
+
+日志出现 `[RTPS_TRANSPORT_SHM Error] Failed init_port` 时，进程间共享内存传输初始化失败、
+退回 UDP，点云等大消息会挤占接收缓冲区，导致 IMU 等小消息一起丢失。通常是进程崩溃后
+`/dev/shm` 残留锁文件，关闭所有 ROS 进程后清理：
+
+```zsh
+ros2 daemon stop
+rm -f /dev/shm/fastrtps_* /dev/shm/sem.fastrtps_*
+```
 
 ## 启动 FAST-LIO2建图
 
@@ -66,7 +89,12 @@ ros2 launch scout_mini_sim lio.launch.py
 | `mapping.plane_min_spread` | 近邻点在第二主轴方向的展开小于该值（米）时丢弃此匹配，去掉共线近邻。需小于 `0.4 * filter_size_map`；`0.0` 关闭 |
 | `mapping.level_constraint_en`、`mapping.level_constraint_std_deg` | 伪观测，使 roll/pitch 保持启动时的值。只适用于单一平整地面，有坡道或用于实车时关闭 |
 
-日志若出现 `IMU gap of ...` 警告，说明 IMU 样本在到达 FAST-LIO 之前已丢失，检查 `config/bridge.yaml` 中 `/imu/data` 的队列深度。
+日志若出现 `IMU gap of ...` 警告，说明 IMU 样本在到达 FAST-LIO 之前已丢失；同时出现的 `No point, skip this scan!` 表示某帧雷达时间段内没有 IMU 数据，整帧被跳过。先按上文"性能"确认 RTF 与共享内存传输正常，再分段测频率定位丢失位置：
+
+```zsh
+ros2 topic hz /imu/data                # bridge 输出，应约 200 Hz
+ros2 topic hz /scout/imu/data_settled  # lidar_time.py 转发后，应与上一行一致
+```
 
 
 ### 里程计和 TF
@@ -83,7 +111,7 @@ ros2 launch scout_mini_sim lio.launch.py
 
 若 LIO 位姿与 EKF 同一时刻相差超过 0.5 m 或 15°，`lio_to_odom` 丢弃该帧；连续约 2 s 超限时判定 LIO 发散，重新对齐并报错，此时应检查 `IMU gap` 警告并重启 `lio.launch.py`。
 
-没有启动 FAST-LIO 时，EKF 只用轮速 + IMU：航向仍不受打滑影响，但位置会慢慢漂移，导航时应启动 FAST-LIO。
+没有启动 FAST-LIO 时，EKF 只用轮速 + IMU：航向仍不受打滑影响，位置会慢慢漂移，由 AMCL 修正。FAST-LIO 在仿真中仍有 `IMU gap` 问题，默认导航流程不启动它。
 
 ```text
 map                          # AMCL（导航时）
@@ -162,15 +190,15 @@ FAST-LIO 地图原点就是建图起点，x 轴是起点处的车头方向（世
 `frame_id: map`，此时无需传转换参数。兼容旧格式：未写 `frame_id` 的 POI 文件
 按 `--frame`（默认 map）解释。
 
-正式巡检时先启动相机、对应场景和已保存地图的 Nav2（每条 launch 使用独立终端）：
+正式巡检时先启动对应场景（相机默认开启）和已保存地图的 Nav2（每条 launch 使用独立终端，
+单显卡电脑可省略 `prime-run`）：
 
 ```zsh
-ros2 launch scout_mini_sim sim.launch.py cameras:=true
-ros2 launch scout_mini_sim lio.launch.py mapping:=false rviz:=false
-ros2 launch scout_mini_navigation navigation.launch.py map:=/绝对路径/对应地图.yaml
+prime-run ros2 launch scout_mini_sim sim.launch.py
+prime-run ros2 launch scout_mini_navigation navigation.launch.py map:=/绝对路径/对应地图.yaml
 ```
 
-启动 FAST-LIO 后保持小车静止，等日志出现 `IMU Initial Done`。
+可选的 FAST-LIO 里程计在两者之间启动，并保持小车静止直到出现 `IMU Initial Done`。
 AMCL 模式先在 RViz 设置 **2D Pose Estimate**，确认激光与地图对齐。
 脚本只等待定位，不自动重置初始位姿。
 导航地图建立流程与 TF 约束见 [导航说明](../scout_mini_navigation/README.md)。
