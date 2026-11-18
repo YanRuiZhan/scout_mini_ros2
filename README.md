@@ -38,8 +38,13 @@ colcon test-result --test-result-base build --verbose
 rosdep install --from-paths src/scout_mini_sim src/scout_mini_navigation \
   src/third_party/fast_lio_ros2 src/third_party/lidar_localization_ros2 \
   src/third_party/ndt_omp_ros2 --ignore-src -r -y
-# 首次编译三维定位器约需十几分钟；内存不足时加 --parallel-workers 1
-colcon build --symlink-install --packages-up-to scout_mini_navigation fast_lio
+# 三维定位器的每个编译进程约占 1~2 GB 内存，不限制并行数容易卡死。
+# MAKEFLAGS 限制每个包内部的并行数（8 GB 内存用 -j1 或 -j2，16 GB 用 -j4），
+# BUILD_TESTING=OFF 跳过它的几十个测试程序；传 --cmake-args 时保留两个 Python 参数。
+MAKEFLAGS="-j2" colcon build --symlink-install --parallel-workers 1 \
+  --packages-up-to scout_mini_navigation fast_lio \
+  --cmake-args -DBUILD_TESTING=OFF \
+  -DPython3_EXECUTABLE=/usr/bin/python3 -DPYTHON_EXECUTABLE=/usr/bin/python3
 
 # 2. 仿真（双显卡笔记本用 prime-run 走独显，见下方"常见问题"）
 prime-run ros2 launch scout_mini_sim sim.launch.py
@@ -123,6 +128,7 @@ FAST-LIO2 本身（`lio.launch.py`）只作为可选里程计，不知道先验�
 |---|---|
 | 日志 `libEGL warning: egl: failed to create dri2 screen`，Gazebo 右下角 RTF 明显低于 100% | Gazebo 未用上显卡，在 CPU 上软件渲染。双显卡笔记本用 `prime-run ros2 launch ...` 启动仿真和导航（`nvidia-smi` 中应出现 `ruby` 进程）；若在 conda 环境中，先 `conda deactivate` |
 | EKF 报 `Failed to meet update rate`、FAST-LIO 报 `IMU gap`、代价地图丢弃激光帧 | CPU 被占满。确认 RTF 接近 100%；可加 `gui:=false` 关闭 Gazebo 窗口；深度相机默认已关闭 |
+| 编译时电脑卡死 | `--parallel-workers` 只限制同时编译的包数，每个包内部仍用全部核心。用上面的 `MAKEFLAGS="-j2"`（或 `-j1`）并加 `-DBUILD_TESTING=OFF` |
 | 日志 `[RTPS_TRANSPORT_SHM Error] Failed init_port` | 进程崩溃后 `/dev/shm` 残留锁文件，进程间通信退回 UDP，大消息易丢包。关闭所有 ROS 进程后执行 `ros2 daemon stop` 与 `rm -f /dev/shm/fastrtps_* /dev/shm/sem.fastrtps_*` |
 | 巡检所有目标 `Getting path failed with status code: 6` | 规划器中止：车的位姿不在地图内。在 RViz 勾选 RobotModel 检查车的位置；出生点与地图原点不一致时检查 `initial_pose`，或用 2D Pose Estimate 重新设置 |
 | 启动导航报 `PCD map not found` | 三维定位找不到与二维地图同名的 PCD。用 `pcd_map:=` 指定 FAST-LIO 保存的 PCD，或 `localizer:=amcl` |

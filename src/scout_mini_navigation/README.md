@@ -12,7 +12,10 @@ ROS 2 Humble / Gazebo Fortress。复用 `scout_mini_sim` 的 `/scan`、`/odom`�
 source /opt/ros/humble/setup.zsh
 rosdep install --from-paths src/scout_mini_sim src/scout_mini_navigation \
   src/third_party/lidar_localization_ros2 src/third_party/ndt_omp_ros2 --ignore-src -r -y
-colcon build --symlink-install --packages-up-to scout_mini_navigation
+# 限制并行数，避免三维定位器编译时内存耗尽卡死，详见根目录 README
+MAKEFLAGS="-j2" colcon build --symlink-install --parallel-workers 1 \
+  --packages-up-to scout_mini_navigation --cmake-args -DBUILD_TESTING=OFF \
+  -DPython3_EXECUTABLE=/usr/bin/python3 -DPYTHON_EXECUTABLE=/usr/bin/python3
 source install/setup.zsh
 ```
 
