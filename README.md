@@ -34,6 +34,30 @@ colcon test-result --test-result-base build/scout_mini_sim --verbose
 支持 SLAM Toolbox 建图导航，以及二维地图 + AMCL 定位导航。
 复用现有 Gazebo 仿真，Nav2 使用系统安装包，无需加入 `third_party`。
 
+### 定位方案
+
+分两层（ROS REP-105）：局部里程计保证连续平滑，全局定位消除长期漂移。
+
+```text
+map ──── odom ──── base_footprint
+    AMCL      EKF（robot_localization）
+```
+
+| 层 | 发布 | 方法 | 输入 |
+|---|---|---|---|
+| 局部里程计 | `odom → base_footprint`、`/odom`（50 Hz） | `robot_localization` EKF 融合 | FAST-LIO2 位姿 x/y/yaw（10 Hz，主力，不受车轮打滑影响）<br>轮式里程计前进速度 + IMU 陀螺仪角速度（补齐两帧雷达之间） |
+| 全局定位 | `map → odom` | AMCL 粒子滤波 | 2D 激光（16 线雷达中间一线）匹配先验二维栅格地图 |
+
+- FAST-LIO2 内部是三维（6 自由度）的，但只作为里程计使用，并不知道先验地图；
+  其位姿由 `lio_to_odom.py` 压平为二维后交给 EKF。最终定位与 Nav2 规划都是二维的。
+- 未启动 FAST-LIO 时 EKF 退化为轮速 + IMU，航向仍准确，但位置会逐渐漂移。
+- 导航启动顺序：`sim.launch.py` → `lio.launch.py mapping:=false`（静止至 `IMU Initial Done`）
+  → `navigation.launch.py map:=...` → RViz 中设置 2D Pose Estimate。
+- 配置：`src/scout_mini_sim/config/ekf.yaml`（EKF）、
+  `src/scout_mini_navigation/config/nav2_params.yaml`（AMCL、速度上限）。
+  细节见 [仿真说明 · 里程计和 TF](src/scout_mini_sim/README.md)。
+- 若货架通道等二维特征重复的区域定位不稳，可考虑升级为三维点云匹配 PCD 地图的全局定位。
+
 ## 全量构建（含实车包）
 
 裸 `colcon build` 会同时构建实车包，需要额外的 ros2_control、ros2_controllers、
