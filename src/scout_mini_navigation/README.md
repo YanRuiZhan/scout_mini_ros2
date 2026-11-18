@@ -114,6 +114,7 @@ ros2 launch scout_mini_navigation navigation.launch.py map:=/绝对路径/maps/s
   DWB、`velocity_smoother`、`behavior_server` 和 Gazebo 插件的上限需一起修改，
   详见 `nav2_params.yaml` 开头的注释。
 - DWB 局部控制、NavFn 全局规划，二维激光障碍层与膨胀层；不包含三维避障。
+  全局代价地图膨胀半径 `1.0 m`（局部 `0.65 m`），让全局路径尽量沿通道中间走。
   雷达平面之外的低矮/悬空障碍不保证可检测。
 - 不要启动实车 `scout_mini_base`，不要让遥控与 Nav2 同时发布速度。
 - 仿真底盘没有命令超时停车。结束导航前应取消目标并显式停车；
