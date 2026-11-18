@@ -56,13 +56,7 @@ ros2 launch scout_mini_sim lio.launch.py
 | `mapping.plane_min_spread` | 近邻点在第二主轴方向的展开小于该值（米）时丢弃此匹配，去掉共线近邻。需小于 `0.4 * filter_size_map`；`0.0` 关闭 |
 | `mapping.level_constraint_en`、`mapping.level_constraint_std_deg` | 伪观测，使 roll/pitch 保持启动时的值。只适用于单一平整地面，有坡道或用于实车时关闭 |
 
-FAST-LIO 每帧把状态写入 `fast_lio_ros2/Log/mat_pre.txt`（每次启动覆盖）。平整地面上真值已知，可直接检查一次建图：
-
-```zsh
-ros2 run scout_mini_sim lio_state_check.py src/third_party/fast_lio_ros2/Log/mat_pre.txt
-```
-
-输出各状态的漂移、倾斜在静止 / 直行 / 转弯时各增长多少，以及是否满足验收阈值（roll、pitch < 0.3°，陀螺零偏 < 10 mdeg/s，加速度计零偏 < 0.02 m/s²，Z 坡度 < 0.1°）。日志若出现 `IMU gap of ...` 警告，说明 IMU 样本在到达 FAST-LIO 之前已丢失，检查 `config/bridge.yaml` 中 `/imu/data` 的队列深度。
+日志若出现 `IMU gap of ...` 警告，说明 IMU 样本在到达 FAST-LIO 之前已丢失，检查 `config/bridge.yaml` 中 `/imu/data` 的队列深度。
 
 
 ### 里程计和 TF

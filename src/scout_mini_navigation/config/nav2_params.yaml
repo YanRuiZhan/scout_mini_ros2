@@ -1,5 +1,15 @@
 # Based on the installed ROS 2 Humble nav2_bringup and slam_toolbox defaults.
-# Conservative Scout Mini simulation settings; tune before real hardware use.
+# Scout Mini simulation settings; tune before real hardware use.
+#
+# 速度上限需要以下几处保持一致，改一处时其余也要同步：
+#   1. controller_server.FollowPath (DWB)：max_vel_x / max_speed_xy / max_vel_theta
+#   2. velocity_smoother：max_velocity / max_accel / max_decel（最终发往 /cmd_vel）
+#   3. behavior_server：max_rotational_vel（原地旋转恢复行为）
+#   4. 局部代价地图 width/height：半宽须大于 max_vel_x * sim_time
+#   5. Gazebo DiffDrive 插件（scout_mini_sim/urdf/scout_mini_rdk.urdf.xacro）：
+#      max_linear_velocity=3.0 m/s，max_angular_velocity=0.40 rad/s
+# Nav2 的角速度若高于 Gazebo 上限，命令会被底盘截断，DWB 预测的轨迹与实际
+# 不符，跟踪误差变大，控制器会选择更慢的轨迹，实际车速明显低于设定上限。
 amcl:
   ros__parameters:
     use_sim_time: true
@@ -130,22 +140,22 @@ controller_server:
       debug_trajectory_details: false
       min_vel_x: 0.0
       min_vel_y: 0.0
-      max_vel_x: 0.3
+      max_vel_x: 2.0            # 线速度上限 (m/s)，与 velocity_smoother 一致
       max_vel_y: 0.0
-      max_vel_theta: 0.8
+      max_vel_theta: 0.4        # 不超过 Gazebo DiffDrive 的 max_angular_velocity
       min_speed_xy: 0.0
-      max_speed_xy: 0.3
+      max_speed_xy: 2.0         # 差速底盘 vy=0，取与 max_vel_x 相同
       min_speed_theta: 0.0
-      acc_lim_x: 0.5
+      acc_lim_x: 1.0
       acc_lim_y: 0.0
       acc_lim_theta: 1.5
-      decel_lim_x: -0.5
+      decel_lim_x: -1.0
       decel_lim_y: 0.0
       decel_lim_theta: -1.5
       vx_samples: 20
       vy_samples: 1
       vtheta_samples: 20
-      sim_time: 1.7
+      sim_time: 1.7             # 前向预测 2.0 m/s * 1.7 s = 3.4 m，须小于局部代价地图半宽
       linear_granularity: 0.05
       angular_granularity: 0.025
       transform_tolerance: 0.2
@@ -180,8 +190,10 @@ local_costmap:
       robot_base_frame: base_footprint
       use_sim_time: true
       rolling_window: true
-      width: 5
-      height: 5
+      # 8 m 见方（车前方 4 m）：须大于 DWB 预测距离 max_vel_x * sim_time = 3.4 m，
+      # 否则高速轨迹超出地图被 DWB 丢弃，实际速度达不到上限。
+      width: 8
+      height: 8
       resolution: 0.05
       plugins:
       - obstacle_layer
@@ -309,7 +321,7 @@ behavior_server:
     transform_tolerance: 0.1
     use_sim_time: true
     simulate_ahead_time: 2.0
-    max_rotational_vel: 0.8
+    max_rotational_vel: 0.4
     min_rotational_vel: 0.2
     rotational_acc_lim: 1.5
 robot_state_publisher:
@@ -331,20 +343,21 @@ velocity_smoother:
     smoothing_frequency: 20.0
     scale_velocities: false
     feedback: OPEN_LOOP
+    # [vx, vy, wz]，须与 controller_server.FollowPath 的上限一致
     max_velocity:
-    - 0.3
+    - 2.0
     - 0.0
-    - 0.8
+    - 0.4
     min_velocity:
     - -0.15
     - 0.0
-    - -0.8
+    - -0.4
     max_accel:
-    - 0.5
+    - 1.0
     - 0.0
     - 1.5
     max_decel:
-    - -0.5
+    - -1.0
     - 0.0
     - -1.5
     odom_topic: odom
