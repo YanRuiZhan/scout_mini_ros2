@@ -2,6 +2,7 @@
 
 ROS 2 Humble / Ubuntu 22.04，功能包在 `src/`，在本目录执行构建。
 仿真模型和使用说明见 [src/scout_mini_sim/README.md](src/scout_mini_sim/README.md)。
+常用参数（速度、控制、规划、定位、仿真、巡检）的当前值与调整方法见 [docs/parameters.md](docs/parameters.md)。
 
 ## 当前阶段：仅仿真
 
