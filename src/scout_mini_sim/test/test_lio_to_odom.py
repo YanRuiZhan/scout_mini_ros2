@@ -75,3 +75,18 @@ def test_propagate_moves_a_late_lio_pose_to_now():
     assert_pose(lio.propagate(lio_at_t, ekf_at_t, ekf_now), expected)
     # No motion since t: the LIO pose is passed through unchanged.
     assert_pose(lio.propagate(lio_at_t, ekf_at_t, ekf_at_t), lio_at_t)
+
+
+def test_jump_guard_rejects_diverged_lio_poses():
+    ekf = pose(5.0, 2.0, yaw=0.3)
+    small = pose(5.1, 2.05, yaw=0.32)       # normal centimetre-level correction
+    far = pose(7.0, 2.0, yaw=0.3)           # LIO jumped 2 m
+    turned = pose(5.0, 2.0, yaw=0.3 + math.radians(30))
+    wrapped = pose(5.0, 2.0, yaw=math.pi - 0.01)
+    wrapped_ekf = pose(5.0, 2.0, yaw=-math.pi + 0.01)
+    limit_m, limit_yaw = 0.5, math.radians(15)
+    assert not lio.is_jump(small, ekf, limit_m, limit_yaw)
+    assert lio.is_jump(far, ekf, limit_m, limit_yaw)
+    assert lio.is_jump(turned, ekf, limit_m, limit_yaw)
+    # +179.4 deg vs -179.4 deg is a 1.1 deg difference, not 358 deg.
+    assert not lio.is_jump(wrapped, wrapped_ekf, limit_m, limit_yaw)

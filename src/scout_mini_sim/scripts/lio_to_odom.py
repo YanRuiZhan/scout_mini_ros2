@@ -36,6 +36,13 @@ FAST-LIO 处理一帧要几十毫秒，位姿到达时车已经往前走了一�
     odom_T_base(now) = lio(t) * inverse(ekf(t)) * ekf(now)
 
 即"LIO 在 t 时刻对 EKF 的修正量"作用到 EKF 的最新位姿上，再以最新时间戳发布。
+
+跳变保护
+--------
+EKF 很信任 LIO，LIO 一旦发散（例如 IMU 大量丢失），odom 会被带着跳走，车在地图上
+跳到别处甚至地图外，规划随之失败。因此 LIO 与 EKF 在同一时刻相差超过
+max_jump_m 或 max_jump_yaw_deg 时丢弃该帧；连续 realign_after 帧都超限，
+说明 LIO 已发散，按 EKF 当前位姿重新对齐，并提示重启 lio.launch.py。
 """
 import math
 
@@ -103,6 +110,13 @@ def propagate(lio_at_t, ekf_at_t, ekf_now):
     return flatten(compose(compose(lio_at_t, inverse(ekf_at_t)), ekf_now))
 
 
+def is_jump(lio_at_t, ekf_at_t, max_m, max_yaw):
+    """LIO 与 EKF 同一时刻的位姿相差是否超过阈值（米、弧度）。"""
+    (lp, lq), (ep, eq) = lio_at_t, ekf_at_t
+    dyaw = math.remainder(yaw_of(lq) - yaw_of(eq), math.tau)
+    return math.hypot(lp[0] - ep[0], lp[1] - ep[1]) > max_m or abs(dyaw) > max_yaw
+
+
 def to_pose(position, orientation):
     """ROS 消息 -> (p, q)，同时检查有限性并归一化四元数。"""
     p = (position.x, position.y, position.z)
@@ -130,12 +144,20 @@ class LioToOdom(Node):
             # 交给 EKF 的测量标准差。越小 EKF 越信任 LIO；它决定了 LIO 与轮速/IMU 的权重。
             "position_std": 0.02,           # m
             "yaw_std_deg": 0.5,             # 度
+            # 跳变保护：10 Hz 下正常的 LIO 修正只有厘米级
+            "max_jump_m": 0.5,
+            "max_jump_yaw_deg": 15.0,
+            "realign_after": 20,            # 连续超限帧数（约 2 s）后重新对齐
         }
         for name, value in defaults.items():
             self.declare_parameter(name, value)
         param = lambda name: self.get_parameter(name).value  # noqa: E731
         self.lio_frame, self.odom_frame = param("lio_frame"), param("odom_frame")
         self.base_frame, self.imu_frame = param("base_frame"), param("imu_frame")
+        self.max_jump_m = param("max_jump_m")
+        self.max_jump_yaw = math.radians(param("max_jump_yaw_deg"))
+        self.realign_after = param("realign_after")
+        self.rejected = 0
         position_var = param("position_std") ** 2
         yaw_var = math.radians(param("yaw_std_deg")) ** 2
         # 6x6 协方差按 [x, y, z, roll, pitch, yaw] 排列；EKF 只融合 x、y、yaw。
@@ -199,6 +221,21 @@ class LioToOdom(Node):
             self.get_logger().warning(f"等待 TF：{error}", throttle_duration_sec=5.0)
             return
         ekf_now = to_pose(latest.transform.translation, latest.transform.rotation)
+        # 5) 跳变保护：与 EKF 差太多的帧不交给 EKF
+        if is_jump(lio_at_t, flatten(ekf_at_t), self.max_jump_m, self.max_jump_yaw):
+            self.rejected += 1
+            self.get_logger().warning(
+                "LIO 位姿与 EKF 相差过大，已丢弃（LIO 可能发散，检查 IMU gap 警告）",
+                throttle_duration_sec=2.0,
+            )
+            if self.rejected >= self.realign_after:
+                self.get_logger().error(
+                    "LIO 连续发散，已按 EKF 当前位姿重新对齐；建议重启 lio.launch.py 重建 LIO 地图"
+                )
+                self.odom_T_ci = None
+                self.rejected = 0
+            return
+        self.rejected = 0
         odom_T_base = propagate(lio_at_t, ekf_at_t, ekf_now)
         out = Odometry()
         out.header.stamp = latest.header.stamp   # 已推算到 EKF 最新时刻

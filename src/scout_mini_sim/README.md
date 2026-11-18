@@ -81,6 +81,8 @@ ros2 launch scout_mini_sim lio.launch.py
 
 `lio_to_odom.py`（随 `lio.launch.py` 启动）把 FAST-LIO 的 `/Odometry`（`camera_init → body`）换算成 odom 下的底盘位姿 `/lio/odom`。收到第一帧时，它用 EKF 当时的位姿对齐两个坐标系，并发布静态 TF `odom → camera_init`，所以先开仿真、晚些再启动 FAST-LIO 也不会让 odom 跳变。FAST-LIO 每帧有几十毫秒处理延迟，`lio_to_odom` 发布前用 EKF 在这段时间内的运动把位姿推算到当前时刻。EKF 不开启 `smooth_lagged_data`：它会因 IMU 与轮速交错到达而频繁回退重放，单轮耗时可达 0.1 s 以上，日志出现 `Failed to meet update rate`。
 
+若 LIO 位姿与 EKF 同一时刻相差超过 0.5 m 或 15°，`lio_to_odom` 丢弃该帧；连续约 2 s 超限时判定 LIO 发散，重新对齐并报错，此时应检查 `IMU gap` 警告并重启 `lio.launch.py`。
+
 没有启动 FAST-LIO 时，EKF 只用轮速 + IMU：航向仍不受打滑影响，但位置会慢慢漂移，导航时应启动 FAST-LIO。
 
 ```text
