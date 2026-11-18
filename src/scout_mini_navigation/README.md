@@ -108,7 +108,7 @@ ros2 launch scout_mini_navigation navigation.launch.py map:=/绝对路径/maps/s
   不启动 FAST-LIO 也能导航，但里程计退化为轮速 + IMU，位置会逐渐漂移。
   AMCL 每移动 `0.1 m` 或转动 `0.1 rad` 更新一次。
 - 初始保守矩形 footprint 为 `0.66 × 0.60 m`（覆盖底盘与车轮），另加 `0.02 m` padding；
-  线速度上限 `1.5 m/s`（加减速 `1.0 m/s²`），角速度上限 `0.8 rad/s`。这些不是实车标定参数。
+  线速度上限 `1.0 m/s`（加减速 `1.0 m/s²`），角速度上限 `0.6 rad/s`。这些不是实车标定参数。
   局部代价地图为 `8 × 8 m`，保证 DWB 的预测轨迹（`max_vel_x × sim_time`）不超出地图。
   角速度上限与 Gazebo DiffDrive 插件的 `max_angular_velocity` 相同；调整速度时，
   DWB、`velocity_smoother`、`behavior_server` 和 Gazebo 插件的上限需一起修改，
