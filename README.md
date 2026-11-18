@@ -41,12 +41,16 @@ colcon build --symlink-install --packages-select scout_mini_sim scout_mini_navig
 # 2. 仿真（双显卡笔记本用 prime-run 走独显，见下方"常见问题"）
 prime-run ros2 launch scout_mini_sim sim.launch.py
 
-# 3. 导航，加载已保存的二维地图
+# 3. 导航，加载已保存的二维地图；AMCL 自动以出生点为初始位姿
 prime-run ros2 launch scout_mini_navigation navigation.launch.py map:=maps/warehouse.yaml
 
-# 4. 在 RViz 用 2D Pose Estimate 设置初始位姿，确认激光与地图重合，再开始巡检
+# 4. 在 RViz 确认激光与地图重合后开始巡检
 ros2 run scout_mini_sim poi_patrol.py --poi maps/warehouse_poi.yaml
 ```
+
+`initial_pose` 默认 `"0 0 0"`：FAST-LIO 从默认出生点建的地图，原点就是出生点。
+出生点或地图不同时传 `initial_pose:="x y yaw"`（map 坐标，米、弧度），
+或传 `initial_pose:=none` 改为在 RViz 用 2D Pose Estimate 手动设置。
 
 `maps/` 不纳入版本库。POI 坐标与地图坐标系的对应关系见
 [仿真说明 · POI 自动巡检](src/scout_mini_sim/README.md#poi-自动巡检)。
@@ -113,7 +117,7 @@ FAST-LIO2 内部是三维（6 自由度）的，但只作为里程计使用，�
 | 日志 `libEGL warning: egl: failed to create dri2 screen`，Gazebo 右下角 RTF 明显低于 100% | Gazebo 未用上显卡，在 CPU 上软件渲染。双显卡笔记本用 `prime-run ros2 launch ...` 启动仿真和导航（`nvidia-smi` 中应出现 `ruby` 进程）；若在 conda 环境中，先 `conda deactivate` |
 | EKF 报 `Failed to meet update rate`、FAST-LIO 报 `IMU gap`、代价地图丢弃激光帧 | CPU 被占满。确认 RTF 接近 100%；可加 `gui:=false` 关闭 Gazebo 窗口；深度相机默认已关闭 |
 | 日志 `[RTPS_TRANSPORT_SHM Error] Failed init_port` | 进程崩溃后 `/dev/shm` 残留锁文件，进程间通信退回 UDP，大消息易丢包。关闭所有 ROS 进程后执行 `ros2 daemon stop` 与 `rm -f /dev/shm/fastrtps_* /dev/shm/sem.fastrtps_*` |
-| 巡检所有目标 `Getting path failed with status code: 6` | 规划器中止：车的位姿不在地图内或未设置初始位姿。在 RViz 勾选 RobotModel 检查车的位置，重新设置 2D Pose Estimate |
+| 巡检所有目标 `Getting path failed with status code: 6` | 规划器中止：车的位姿不在地图内。在 RViz 勾选 RobotModel 检查车的位置；出生点与地图原点不一致时检查 `initial_pose`，或用 2D Pose Estimate 重新设置 |
 | 巡检目标落在仓库外，小车开出大门 | POI 坐标系与地图不一致，见仿真说明中的 `--poi-transform` |
 
 ## 全量构建（含实车包）

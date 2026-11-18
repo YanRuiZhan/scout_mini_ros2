@@ -53,6 +53,14 @@ amcl:
     z_rand: 0.5
     z_short: 0.05
     scan_topic: scan
+    # 初始位姿由 navigation.launch.py 的 initial_pose 参数改写；
+    # 这里的值只在直接用本文件、不经过该 launch 时生效。
+    set_initial_pose: false
+    initial_pose:
+      x: 0.0
+      y: 0.0
+      z: 0.0
+      yaw: 0.0
 bt_navigator:
   ros__parameters:
     use_sim_time: true

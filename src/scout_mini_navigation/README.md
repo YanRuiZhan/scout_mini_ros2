@@ -51,7 +51,8 @@ source install/setup.zsh
 prime-run ros2 launch scout_mini_navigation navigation.launch.py map:=/绝对路径/maps/room_03_grid.yaml
 ```
 
-先设置 **2D Pose Estimate** 并检查激光与地图是否对齐，再进行小范围导航测试。
+PCD 转出的地图原点是建图起点；小车不在该点时用 `initial_pose:="x y yaw"` 指定，
+或 `initial_pose:=none` 后在 RViz 设置 **2D Pose Estimate**。检查激光与地图对齐后再进行小范围导航测试。
 
 ## 可选：SLAM Toolbox 重新建立二维地图
 
@@ -95,8 +96,10 @@ prime-run ros2 launch scout_mini_navigation navigation.launch.py map:=/绝对路
 ros2 launch scout_mini_sim lio.launch.py mapping:=false rviz:=false
 ```
 
-在 RViz 中先用 **2D Pose Estimate** 指定小车当前位姿，确认激光与地图对齐，
-再用 **Nav2 Goal** 发送目标。`map` 必须与当前 Gazebo 场景一致。
+AMCL 默认以 `initial_pose:="0 0 0"`（map 坐标，米、弧度）作为初始位姿，适用于从默认
+出生点用 FAST-LIO 建的地图。其他情况传实际位姿，例如 `initial_pose:="1.0 -2.0 1.57"`；
+传 `initial_pose:=none` 则在 RViz 中用 **2D Pose Estimate** 手动指定。
+确认激光与地图对齐后，再用 **Nav2 Goal** 发送目标。`map` 必须与当前 Gazebo 场景一致。
 默认 `slam:=false`；未指定有效地图时会明确报错，而不是加载无关的示例地图。
 可用 `rviz:=false` 或 `params_file:=/绝对路径/参数.yaml`。
 

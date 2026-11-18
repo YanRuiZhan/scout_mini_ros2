@@ -199,8 +199,8 @@ prime-run ros2 launch scout_mini_navigation navigation.launch.py map:=/绝对路
 ```
 
 可选的 FAST-LIO 里程计在两者之间启动，并保持小车静止直到出现 `IMU Initial Done`。
-AMCL 模式先在 RViz 设置 **2D Pose Estimate**，确认激光与地图对齐。
-脚本只等待定位，不自动重置初始位姿。
+AMCL 默认以出生点为初始位姿（`navigation.launch.py` 的 `initial_pose`，见导航说明），
+在 RViz 确认激光与地图对齐后再开始巡检。脚本只等待定位，不自动重置初始位姿。
 导航地图建立流程与 TF 约束见 [导航说明](../scout_mini_navigation/README.md)。
 对已经转换到 map 的 POI 文件，可在工作空间根目录运行：
 
