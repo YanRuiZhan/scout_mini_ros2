@@ -5,8 +5,8 @@
 ------
 FAST-LIO2  /Odometry (camera_init -> body)     10 Hz，body 即 imu_link
     │
-    ▼  本节点：换算到 odom 坐标系、换成 base_footprint、压平到二维
-/lio/odom  (odom -> base_footprint)
+    ▼  本节点：换算到 odom 坐标系、换成 base_footprint、压平到二维、补偿延迟
+/lio/odom  (odom -> base_footprint，时间戳为当前)
     │
     ▼  robot_localization EKF（config/ekf.yaml）
 /odom 和 TF odom -> base_footprint             50 Hz
@@ -27,6 +27,15 @@ camera_init 是 FAST-LIO 启动时 IMU 所在的位置，odom 是 EKF 启动时�
       （AMCL）   └─ camera_init ── body                    （FAST-LIO）
 
 重启 FAST-LIO（重启 lio.launch.py）时本节点也会重启并重新对齐，odom 保持连续。
+
+延迟补偿
+--------
+FAST-LIO 处理一帧要几十毫秒，位姿到达时车已经往前走了一段。若把旧位置当成现在的
+位置交给 EKF，车越快位姿越往回拉。这里用 EKF 自己在这段时间里的运动把它推到当前：
+
+    odom_T_base(now) = lio(t) * inverse(ekf(t)) * ekf(now)
+
+即"LIO 在 t 时刻对 EKF 的修正量"作用到 EKF 的最新位姿上，再以最新时间戳发布。
 """
 import math
 
@@ -87,6 +96,11 @@ def flatten(pose):
     (x, y, _), q = pose
     yaw = yaw_of(q)
     return (x, y, 0.0), (0.0, 0.0, math.sin(yaw / 2.0), math.cos(yaw / 2.0))
+
+
+def propagate(lio_at_t, ekf_at_t, ekf_now):
+    """把 t 时刻的 LIO 位姿推算到 EKF 最新时刻：lio(t) * inverse(ekf(t)) * ekf(now)。"""
+    return flatten(compose(compose(lio_at_t, inverse(ekf_at_t)), ekf_now))
 
 
 def to_pose(position, orientation):
@@ -176,9 +190,18 @@ class LioToOdom(Node):
             return
 
         # 3) odom_T_base = odom_T_ci * ci_T_imu * imu_T_base，再压平到二维
-        odom_T_base = flatten(compose(compose(self.odom_T_ci, ci_T_imu), inverse(self.base_T_imu)))
+        lio_at_t = flatten(compose(compose(self.odom_T_ci, ci_T_imu), inverse(self.base_T_imu)))
+        # 4) 补偿处理延迟：用 EKF 在 t 时刻和最新时刻的位姿，把 LIO 位姿推到当前
+        try:
+            ekf_at_t = self.lookup(self.odom_frame, self.base_frame, stamp)
+            latest = self.buffer.lookup_transform(self.odom_frame, self.base_frame, Time())
+        except TransformException as error:
+            self.get_logger().warning(f"等待 TF：{error}", throttle_duration_sec=5.0)
+            return
+        ekf_now = to_pose(latest.transform.translation, latest.transform.rotation)
+        odom_T_base = propagate(lio_at_t, ekf_at_t, ekf_now)
         out = Odometry()
-        out.header.stamp = msg.header.stamp      # 保留雷达时间戳，EKF 据此回溯融合
+        out.header.stamp = latest.header.stamp   # 已推算到 EKF 最新时刻
         out.header.frame_id = self.odom_frame
         out.child_frame_id = self.base_frame
         (p, q) = odom_T_base

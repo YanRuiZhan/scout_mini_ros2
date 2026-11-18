@@ -69,7 +69,7 @@ ros2 launch scout_mini_sim lio.launch.py
 | 轮式里程计 `/wheel/odom` | vx（及差速约束 vy=0） | 补齐两帧雷达之间的平移 |
 | IMU `/imu/data` | 航向角速度 | 补齐两帧雷达之间的转动 |
 
-`lio_to_odom.py`（随 `lio.launch.py` 启动）把 FAST-LIO 的 `/Odometry`（`camera_init → body`）换算成 odom 下的底盘位姿 `/lio/odom`。收到第一帧时，它用 EKF 当时的位姿对齐两个坐标系，并发布静态 TF `odom → camera_init`，所以先开仿真、晚些再启动 FAST-LIO 也不会让 odom 跳变。FAST-LIO 每帧有几十毫秒处理延迟，EKF 开启了 `smooth_lagged_data`，会回退到雷达时间戳重新融合。
+`lio_to_odom.py`（随 `lio.launch.py` 启动）把 FAST-LIO 的 `/Odometry`（`camera_init → body`）换算成 odom 下的底盘位姿 `/lio/odom`。收到第一帧时，它用 EKF 当时的位姿对齐两个坐标系，并发布静态 TF `odom → camera_init`，所以先开仿真、晚些再启动 FAST-LIO 也不会让 odom 跳变。FAST-LIO 每帧有几十毫秒处理延迟，`lio_to_odom` 发布前用 EKF 在这段时间内的运动把位姿推算到当前时刻。EKF 不开启 `smooth_lagged_data`：它会因 IMU 与轮速交错到达而频繁回退重放，单轮耗时可达 0.1 s 以上，日志出现 `Failed to meet update rate`。
 
 没有启动 FAST-LIO 时，EKF 只用轮速 + IMU：航向仍不受打滑影响，但位置会慢慢漂移，导航时应启动 FAST-LIO。
 

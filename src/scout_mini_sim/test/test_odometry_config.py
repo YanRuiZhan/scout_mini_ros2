@@ -43,9 +43,10 @@ def test_ekf_fuses_lio_pose_with_lag_compensation():
     assert f'"output_topic": "{ekf["odom1"]}"' in node
     # x, y and yaw from LIO; everything else comes from the wheels and the gyro.
     assert [i for i, used in enumerate(ekf["odom1_config"]) if used] == [0, 1, 5]
-    # LIO poses arrive tens of ms late; without rewinding, fusing them as
-    # "now" would pull the pose back along the path.
-    assert ekf["smooth_lagged_data"] is True and ekf["history_length"] >= 0.5
+    # Rewinding on every out-of-order IMU/wheel message made each EKF cycle take
+    # 0.1-0.2 s; lio_to_odom compensates the LIO delay before publishing instead.
+    assert ekf["smooth_lagged_data"] is False
+    assert "propagate(" in node
 
 
 def test_nav2_limits_fit_the_simulated_base():

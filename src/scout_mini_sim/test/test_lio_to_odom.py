@@ -63,3 +63,15 @@ def test_flatten_drops_height_roll_and_pitch():
     tilted = ((1.0, 2.0, 0.4), lio.quat_mul(pose(0, 0, yaw=0.5)[1],
                                            (math.sin(roll / 2), 0.0, 0.0, math.cos(roll / 2))))
     assert_pose(lio.flatten(tilted), pose(1.0, 2.0, yaw=0.5))
+
+
+def test_propagate_moves_a_late_lio_pose_to_now():
+    # At t the EKF thought the base was at (1, 0); LIO says (1.1, 0.05) facing
+    # 2 deg left. Since t the EKF has driven 0.2 m forward.
+    lio_at_t = pose(1.1, 0.05, yaw=math.radians(2))
+    ekf_at_t = pose(1.0, 0.0)
+    ekf_now = pose(1.2, 0.0)
+    expected = lio.flatten(lio.compose(lio_at_t, pose(0.2, 0.0)))
+    assert_pose(lio.propagate(lio_at_t, ekf_at_t, ekf_now), expected)
+    # No motion since t: the LIO pose is passed through unchanged.
+    assert_pose(lio.propagate(lio_at_t, ekf_at_t, ekf_at_t), lio_at_t)
