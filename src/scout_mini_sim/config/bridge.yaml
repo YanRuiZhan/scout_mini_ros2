@@ -11,16 +11,13 @@
   gz_type_name: ignition.msgs.Twist
   direction: ROS_TO_GZ
 
-- ros_topic_name: /odom
-  gz_topic_name: /odom
+# Raw wheel odometry, fused with the IMU by robot_localization (config/ekf.yaml),
+# which publishes /odom and odom -> base_footprint. The DiffDrive TF (/wheel/tf)
+# is not bridged, so the EKF is the only odom -> base_footprint publisher.
+- ros_topic_name: /wheel/odom
+  gz_topic_name: /wheel/odom
   ros_type_name: nav_msgs/msg/Odometry
   gz_type_name: ignition.msgs.Odometry
-  direction: GZ_TO_ROS
-
-- ros_topic_name: /tf
-  gz_topic_name: /tf
-  ros_type_name: tf2_msgs/msg/TFMessage
-  gz_type_name: ignition.msgs.Pose_V
   direction: GZ_TO_ROS
 
 - ros_topic_name: /joint_states

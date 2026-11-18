@@ -317,15 +317,18 @@
       <wheel_separation>0.90</wheel_separation>
       <wheel_radius>0.08</wheel_radius>
       <topic>/cmd_vel</topic>
-      <odom_topic>/odom</odom_topic>
-      <tf_topic>/tf</tf_topic>
+      <!-- Raw wheel odometry only. robot_localization (config/ekf.yaml) fuses it
+           with the IMU gyro and publishes /odom and odom -> base_footprint;
+           /wheel/tf is deliberately not bridged so the two never conflict. -->
+      <odom_topic>/wheel/odom</odom_topic>
+      <tf_topic>/wheel/tf</tf_topic>
       <odom_publish_frequency>50</odom_publish_frequency>
       <frame_id>odom</frame_id>
       <child_frame_id>base_footprint</child_frame_id>
       <max_linear_velocity>3.0</max_linear_velocity>
       <!-- keep equal to Nav2's max_vel_theta / velocity_smoother / behavior_server
            limits in scout_mini_navigation/config/nav2_params.yaml -->
-      <max_angular_velocity>1.0</max_angular_velocity>
+      <max_angular_velocity>0.8</max_angular_velocity>
     </plugin>
     <plugin filename="ignition-gazebo-joint-state-publisher-system"
             name="ignition::gazebo::systems::JointStatePublisher">

@@ -99,9 +99,12 @@ ros2 launch scout_mini_navigation navigation.launch.py map:=/绝对路径/maps/s
 - `config/nav2_params.yaml` 基于本机 Humble 的 Nav2 / SLAM Toolbox 默认配置，
   保留 Humble 的插件名称和行为树插件列表。
 - 全局坐标系 `map`，局部坐标系 `odom`，底盘参考系 `base_footprint`。
+- 定位：AMCL（2D 激光匹配先验栅格地图）发布 `map → odom`；`odom → base_footprint`
+  来自 `scout_mini_sim` 的 EKF（轮速 + IMU 陀螺仪），转弯打滑时航向仍准确。
+  AMCL 每移动 `0.1 m` 或转动 `0.1 rad` 更新一次。
 - 初始保守矩形 footprint 为 `0.66 × 0.60 m`（覆盖底盘与车轮），另加 `0.02 m` padding；
-  线速度上限 `2.0 m/s`（加减速 `1.0 m/s²`），角速度上限 `1.0 rad/s`。这些不是实车标定参数。
-  局部代价地图为 `8 × 8 m`，保证 DWB 在 2.0 m/s 下的预测轨迹（约 3.4 m）不超出地图。
+  线速度上限 `1.5 m/s`（加减速 `1.0 m/s²`），角速度上限 `0.8 rad/s`。这些不是实车标定参数。
+  局部代价地图为 `8 × 8 m`，保证 DWB 的预测轨迹（`max_vel_x × sim_time`）不超出地图。
   角速度上限与 Gazebo DiffDrive 插件的 `max_angular_velocity` 相同；调整速度时，
   DWB、`velocity_smoother`、`behavior_server` 和 Gazebo 插件的上限需一起修改，
   详见 `nav2_params.yaml` 开头的注释。

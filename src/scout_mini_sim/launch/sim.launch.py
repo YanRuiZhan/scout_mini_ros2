@@ -71,6 +71,15 @@ def launch_sim(context):
             }],
             output="screen",
         ),
+        # Wheel odometry + IMU gyro -> /odom and TF odom -> base_footprint.
+        Node(
+            package="robot_localization",
+            executable="ekf_node",
+            name="ekf_filter_node",
+            parameters=[str(share / "config" / "ekf.yaml")],
+            remappings=[("odometry/filtered", "/odom")],
+            output="screen",
+        ),
         Node(
             package="rviz2",
             executable="rviz2",

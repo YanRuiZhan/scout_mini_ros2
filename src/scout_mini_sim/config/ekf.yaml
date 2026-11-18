@@ -1,0 +1,39 @@
+# robot_localization EKF：融合轮式里程计和 IMU，发布 /odom 与 TF odom -> base_footprint。
+#
+# 为什么不直接用轮式里程计：Scout Mini 是四轮滑移转向，转弯时车轮打滑，
+# 只靠轮速积分的航向误差会随转速迅速增大，AMCL 每次修正时位姿就会跳变。
+# 这里各取所长：
+#   - 前进速度 vx（以及 vy=0 的差速约束）来自轮式里程计 /wheel/odom
+#   - 航向角速度 vyaw 来自 IMU 陀螺仪 /imu/data，不受打滑影响
+# 输出在 sim.launch.py 中重映射为 /odom，Nav2 等下游节点无需修改。
+ekf_filter_node:
+  ros__parameters:
+    use_sim_time: true
+    frequency: 50.0
+    two_d_mode: true          # 平面运动：忽略 z / roll / pitch
+    publish_tf: true
+
+    map_frame: map            # 由 AMCL 发布 map -> odom，EKF 不参与
+    odom_frame: odom
+    base_link_frame: base_footprint
+    world_frame: odom         # 本 EKF 只做局部（连续、无跳变）里程计
+
+    # 每个 *_config 依次为：
+    # [x, y, z, roll, pitch, yaw,
+    #  vx, vy, vz, vroll, vpitch, vyaw,
+    #  ax, ay, az]
+    odom0: /wheel/odom
+    odom0_config: [false, false, false,
+                   false, false, false,
+                   true,  true,  false,
+                   false, false, false,
+                   false, false, false]
+    odom0_queue_size: 10
+
+    imu0: /imu/data
+    imu0_config: [false, false, false,
+                  false, false, false,
+                  false, false, false,
+                  false, false, true,
+                  false, false, false]
+    imu0_queue_size: 50

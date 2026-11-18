@@ -7,16 +7,18 @@
 #   3. behavior_server：max_rotational_vel（原地旋转恢复行为）
 #   4. 局部代价地图 width/height：半宽须大于 max_vel_x * sim_time
 #   5. Gazebo DiffDrive 插件（scout_mini_sim/urdf/scout_mini_rdk.urdf.xacro）：
-#      max_linear_velocity=3.0 m/s，max_angular_velocity=1.0 rad/s
+#      max_linear_velocity=3.0 m/s，max_angular_velocity=0.8 rad/s
 # Nav2 的角速度若高于 Gazebo 上限，命令会被底盘截断，DWB 预测的轨迹与实际
 # 不符，跟踪误差变大，控制器会选择更慢的轨迹，实际车速明显低于设定上限。
 amcl:
   ros__parameters:
     use_sim_time: true
-    alpha1: 0.2
-    alpha2: 0.2
-    alpha3: 0.2
-    alpha4: 0.2
+    # 运动模型噪声。里程计已融合 IMU 航向（scout_mini_sim/config/ekf.yaml），
+    # 比纯轮速可靠，取 0.1；若改回纯轮式里程计应调回 0.2 或更大。
+    alpha1: 0.1
+    alpha2: 0.1
+    alpha3: 0.1
+    alpha4: 0.1
     alpha5: 0.2
     base_frame_id: base_footprint
     beam_skip_distance: 0.5
@@ -29,7 +31,7 @@ amcl:
     laser_max_range: 100.0
     laser_min_range: -1.0
     laser_model_type: likelihood_field
-    max_beams: 60
+    max_beams: 120
     max_particles: 2000
     min_particles: 500
     odom_frame_id: odom
@@ -43,8 +45,9 @@ amcl:
     sigma_hit: 0.2
     tf_broadcast: true
     transform_tolerance: 1.0
-    update_min_a: 0.2
-    update_min_d: 0.25
+    # 每移动 0.1 m 或转动 0.1 rad 更新一次：修正更频繁，单次位姿跳变更小。
+    update_min_a: 0.1
+    update_min_d: 0.1
     z_hit: 0.5
     z_max: 0.05
     z_rand: 0.5
@@ -140,11 +143,11 @@ controller_server:
       debug_trajectory_details: false
       min_vel_x: 0.0
       min_vel_y: 0.0
-      max_vel_x: 2.0            # 线速度上限 (m/s)，与 velocity_smoother 一致
+      max_vel_x: 1.5            # 线速度上限 (m/s)，与 velocity_smoother 一致
       max_vel_y: 0.0
-      max_vel_theta: 1.0        # 不超过 Gazebo DiffDrive 的 max_angular_velocity
+      max_vel_theta: 0.8        # 不超过 Gazebo DiffDrive 的 max_angular_velocity
       min_speed_xy: 0.0
-      max_speed_xy: 2.0         # 差速底盘 vy=0，取与 max_vel_x 相同
+      max_speed_xy: 1.5         # 差速底盘 vy=0，取与 max_vel_x 相同
       min_speed_theta: 0.0
       acc_lim_x: 1.0
       acc_lim_y: 0.0
@@ -155,7 +158,7 @@ controller_server:
       vx_samples: 20
       vy_samples: 1
       vtheta_samples: 20
-      sim_time: 1.7             # 前向预测 2.0 m/s * 1.7 s = 3.4 m，须小于局部代价地图半宽
+      sim_time: 1.7             # 前向预测 1.5 m/s * 1.7 s ≈ 2.6 m，须小于局部代价地图半宽
       linear_granularity: 0.05
       angular_granularity: 0.025
       transform_tolerance: 0.2
@@ -190,7 +193,7 @@ local_costmap:
       robot_base_frame: base_footprint
       use_sim_time: true
       rolling_window: true
-      # 8 m 见方（车前方 4 m）：须大于 DWB 预测距离 max_vel_x * sim_time = 3.4 m，
+      # 8 m 见方（车前方 4 m）：须大于 DWB 预测距离 max_vel_x * sim_time ≈ 2.6 m，
       # 否则高速轨迹超出地图被 DWB 丢弃，实际速度达不到上限。
       width: 8
       height: 8
@@ -321,7 +324,7 @@ behavior_server:
     transform_tolerance: 0.1
     use_sim_time: true
     simulate_ahead_time: 2.0
-    max_rotational_vel: 1.0
+    max_rotational_vel: 0.8
     min_rotational_vel: 0.2
     rotational_acc_lim: 1.5
 robot_state_publisher:
@@ -345,13 +348,13 @@ velocity_smoother:
     feedback: OPEN_LOOP
     # [vx, vy, wz]，须与 controller_server.FollowPath 的上限一致
     max_velocity:
-    - 2.0
+    - 1.5
     - 0.0
-    - 1.0
+    - 0.8
     min_velocity:
     - -0.15
     - 0.0
-    - -1.0
+    - -0.8
     max_accel:
     - 1.0
     - 0.0

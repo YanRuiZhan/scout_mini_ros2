@@ -61,13 +61,13 @@ ros2 launch scout_mini_sim lio.launch.py
 
 ### 里程计和 TF
 
-仿真会发布轮式里程计 `/odom` 和 TF `odom → base_footprint`。FAST-LIO2 会发布 `/Odometry` 和 TF `camera_init → body`。`lio_odom_bridge` 再发布 `camera_init → odom`，把两棵 TF 树连接起来；它不会融合两路里程计，也不提供已保存地图的重定位。
+仿真底盘只发布原始轮式里程计 `/wheel/odom`。`robot_localization` 的 EKF（`config/ekf.yaml`）融合轮速的前进速度和 IMU 陀螺仪的航向角速度，发布 `/odom` 和 TF `odom → base_footprint`。滑移转向车转弯时车轮打滑，只靠轮速的航向误差很大；IMU 不受打滑影响，因此 `/odom` 在快速转弯时也保持准确。FAST-LIO2 会发布 `/Odometry` 和 TF `camera_init → body`。`lio_odom_bridge` 再发布 `camera_init → odom`，把两棵 TF 树连接起来；它不会融合两路里程计，也不提供已保存地图的重定位。
 
 ```text
 camera_init
 ├── body                 # FAST-LIO2
 └── odom                 # lio_odom_bridge
-    └── base_footprint   # 仿真底盘
+    └── base_footprint   # EKF（轮速 + IMU）
         └── base_link    # 机器人模型和传感器
 ```
 

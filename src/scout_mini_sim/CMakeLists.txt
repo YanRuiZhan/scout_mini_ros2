@@ -14,6 +14,7 @@ install(FILES README.md DESTINATION share/${PROJECT_NAME})
 if(BUILD_TESTING)
   find_package(ament_cmake_pytest REQUIRED)
   ament_add_pytest_test(lio_config test/test_lio_config.py)
+  ament_add_pytest_test(odometry_config test/test_odometry_config.py)
   ament_add_pytest_test(lidar_time test/test_lidar_time.py)
   ament_add_pytest_test(poi_patrol test/test_poi_patrol.py)
   ament_add_pytest_test(lio_odom_bridge test/test_lio_odom_bridge.py
