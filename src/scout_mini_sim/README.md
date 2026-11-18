@@ -209,8 +209,9 @@ ros2 run scout_mini_sim poi_patrol.py --poi /绝对路径/poi_in_map.yaml \
   --only PG-W01 --out patrol_out
 ```
 
-SLAM Toolbox 导航模式使用 `--localizer slam_toolbox`；外部定位且没有生命周期节点时
-使用 `--localizer none`，仍要求目标坐标系到 `base_footprint` 的 TF 可用。
+`--localizer` 默认 `auto`：不检查具体的定位节点（三维 NDT 或 AMCL 均可），等到目标坐标系
+到 `base_footprint` 的 TF 可用即开始。也可指定节点名（如 `lidar_localization`、`amcl`、
+`slam_toolbox`），脚本会额外等待它进入 active。
 运行时默认从当前 TF 决定排序起点；`--start-x/--start-y` 只影响排序，不会初始化定位。
 启动准备默认等待 60 秒，可通过 `--startup-timeout` 调整。
 `--timeout` 为单目标导航墙钟超时；`--image-timeout` 控制新帧等待时间。

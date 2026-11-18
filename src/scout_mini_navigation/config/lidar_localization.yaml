@@ -1,0 +1,64 @@
+# 三维定位：lidar_localization_ros2（NDT），把当前点云配准到 FAST-LIO 建的 PCD 地图。
+#
+# 只替换 AMCL 的职责：发布 map -> odom。odom -> base_footprint 仍由 scout_mini_sim 的
+# EKF（轮速 + IMU）提供，规划、控制、二维栅格地图都不变。PCD 和二维栅格来自同一次
+# 建图（pcd_to_grid.py 保留 PCD 的 XY），坐标系天然一致，无需额外对齐。
+#
+# navigation.launch.py 会覆盖这些参数：map_path（pcd_map 参数）、set_initial_pose 和
+# initial_pose_x / _y / _qz / _qw（initial_pose 参数）。
+# 参数名均已对照 src/third_party/lidar_localization_ros2 源码中的 declare_parameter 核对。
+lidar_localization:
+  ros__parameters:
+    use_sim_time: true
+
+    # ---- 坐标系：Nav2 模式，只发布 map -> odom ----
+    global_frame_id: map
+    odom_frame_id: odom
+    base_frame_id: base_footprint
+    enable_map_odom_tf: true
+    level_map_to_odom: true          # map -> odom 只保留 x、y、yaw，与二维导航一致
+
+    # ---- 配准初值：用 EKF 的 odom -> base_footprint 预测本帧位姿 ----
+    use_odom_tf_prediction: true
+    predict_pose_from_previous_delta: true   # 没有 odom TF 时的退路
+    use_odom: false
+    use_twist_prediction: false
+    use_imu_preintegration: false     # IMU 已经在 EKF 里用过，这里不再重复使用
+
+    # ---- NDT ----
+    registration_method: NDT_OMP
+    ndt_resolution: 1.0               # 体素边长 (m)；仓库约 30 x 50 m，1.0 稳健，0.5 更精细但对初值更敏感
+    ndt_step_size: 0.1
+    ndt_max_iterations: 35
+    ndt_num_threads: 4
+    transform_epsilon: 0.01
+    score_threshold: 6.0              # 配准得分高于该值视为失败，保留上一次的 map -> odom
+    reject_above_score_threshold: true
+
+    # ---- 输入点云 ----
+    voxel_leaf_size: 0.2              # 当前帧降采样
+    scan_min_range: 0.5
+    scan_max_range: 40.0
+    scan_period: 0.1
+    # Gazebo GPU 雷达一帧在同一时刻采集，点云没有逐点时间，不做运动去畸变
+    use_continuous_time_deskew: false
+
+    # ---- 地图 ----
+    use_pcd_map: true
+    map_path: ""                      # 由 launch 的 pcd_map 参数设置
+    enable_local_map_crop: false      # 仓库地图不大，整张图作为配准目标
+
+    # ---- 初始位姿（由 launch 的 initial_pose 参数设置） ----
+    set_initial_pose: false
+    initial_pose_x: 0.0
+    initial_pose_y: 0.0
+    # base_footprint 在地图中的高度。FAST-LIO 地图原点是建图起点处的 IMU，
+    # IMU 与 base_link 重合，base_link 离地 0.181 m（URDF 的 base_height），
+    # 所以地面上的 base_footprint 在地图中约为 z = -0.18。
+    initial_pose_z: -0.18
+    initial_pose_qx: 0.0
+    initial_pose_qy: 0.0
+    initial_pose_qz: 0.0
+    initial_pose_qw: 1.0
+
+    enable_timer_publishing: false

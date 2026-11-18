@@ -260,6 +260,7 @@ global_costmap:
       inflation_layer:
         plugin: nav2_costmap_2d::InflationLayer
         # 让全局路径沿通道中间走，转弯时离货架远一些，给局部控制器留出跟踪误差的余量。
+        # Smac 2D 按 cost_travel_multiplier 把这些代价计入路径代价。
         # 车身外接圆半径约 0.47 m；0.65 m 只多出 0.18 m，路径会紧贴货架端头绕过，
         # 高速切弯时车身擦到货架卡住。衰减系数越小，离障碍物越远的格子代价越高。
         cost_scaling_factor: 2.0
@@ -284,11 +285,25 @@ planner_server:
     use_sim_time: true
     planner_plugins:
     - GridBased
+    # Smac Planner 2D：A* 搜索栅格，代价地图中的代价参与路径代价，路径自动远离障碍物；
+    # 自带平滑器，比 NavFn（Dijkstra）的路径更顺。参数名已对照 Humble 源码核对。
     GridBased:
-      plugin: nav2_navfn_planner/NavfnPlanner
-      tolerance: 0.5
-      use_astar: false
-      allow_unknown: true
+      plugin: nav2_smac_planner/SmacPlanner2D
+      tolerance: 0.5                  # 目标不可达时，允许在其周围多远内找替代终点 (m)
+      downsample_costmap: false
+      downsampling_factor: 1
+      allow_unknown: true             # PCD 转出的栅格内部有未知孔洞，需允许穿过
+      max_iterations: 1000000
+      max_on_approach_iterations: 1000
+      max_planning_time: 2.0          # s
+      cost_travel_multiplier: 2.0     # 越大越倾向走低代价（离障碍物远）的格子
+      use_final_approach_orientation: false
+      smoother:
+        max_iterations: 1000
+        w_smooth: 0.3
+        w_data: 0.2
+        tolerance: 1.0e-10
+        do_refinement: true
 smoother_server:
   ros__parameters:
     use_sim_time: true

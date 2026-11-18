@@ -10,8 +10,9 @@ ROS 2 Humble / Gazebo Fortress。复用 `scout_mini_sim` 的 `/scan`、`/odom`�
 
 ```zsh
 source /opt/ros/humble/setup.zsh
-rosdep install --from-paths src/scout_mini_sim src/scout_mini_navigation --ignore-src -r -y
-colcon build --packages-select scout_mini_sim scout_mini_navigation
+rosdep install --from-paths src/scout_mini_sim src/scout_mini_navigation \
+  src/third_party/lidar_localization_ros2 src/third_party/ndt_omp_ros2 --ignore-src -r -y
+colcon build --symlink-install --packages-up-to scout_mini_navigation
 source install/setup.zsh
 ```
 
@@ -45,10 +46,12 @@ source install/setup.zsh
 障碍物上表面/内部可能仍为未知。不要直接全局填洞或打开未知区通行来掩盖问题。
 后续可结合建图轨迹/原始扫描做射线重建，或在核实场景后采用受限的地面插补。
 
-必须启动与 PCD 对应的 Gazebo 场景。导航时关闭 SLAM Toolbox，以 AMCL 管理全局定位：
+必须启动与 PCD 对应的 Gazebo 场景。三维定位直接使用这份 PCD：二维栅格与 PCD 同名
+（`room_03_grid.yaml` 对应 `room_03_grid.pcd`）时自动找到，否则用 `pcd_map:=` 指定：
 
 ```zsh
-prime-run ros2 launch scout_mini_navigation navigation.launch.py map:=/绝对路径/maps/room_03_grid.yaml
+prime-run ros2 launch scout_mini_navigation navigation.launch.py \
+  map:=/绝对路径/maps/room_03_grid.yaml pcd_map:=/绝对路径/maps/room_03.pcd
 ```
 
 PCD 转出的地图原点是建图起点；小车不在该点时用 `initial_pose:="x y yaw"` 指定，
@@ -96,7 +99,9 @@ prime-run ros2 launch scout_mini_navigation navigation.launch.py map:=/绝对路
 ros2 launch scout_mini_sim lio.launch.py mapping:=false rviz:=false
 ```
 
-AMCL 默认以 `initial_pose:="0 0 0"`（map 坐标，米、弧度）作为初始位姿，适用于从默认
+三维定位需要 `<地图名>.pcd`（与二维地图 YAML 同名，或用 `pcd_map:=` 指定）；
+SLAM Toolbox 建的二维地图没有 PCD，需加 `localizer:=amcl`。
+定位器默认以 `initial_pose:="0 0 0"`（map 坐标，米、弧度）作为初始位姿，适用于从默认
 出生点用 FAST-LIO 建的地图。其他情况传实际位姿，例如 `initial_pose:="1.0 -2.0 1.57"`；
 传 `initial_pose:=none` 则在 RViz 中用 **2D Pose Estimate** 手动指定。
 确认激光与地图对齐后，再用 **Nav2 Goal** 发送目标。`map` 必须与当前 Gazebo 场景一致。
@@ -108,10 +113,14 @@ AMCL 默认以 `initial_pose:="0 0 0"`（map 坐标，米、弧度）作为初�
 - `config/nav2_params.yaml` 基于本机 Humble 的 Nav2 / SLAM Toolbox 默认配置，
   保留 Humble 的插件名称和行为树插件列表。
 - 全局坐标系 `map`，局部坐标系 `odom`，底盘参考系 `base_footprint`。
-- 定位：AMCL（2D 激光匹配先验栅格地图）发布 `map → odom`；`odom → base_footprint`
-  来自 `scout_mini_sim` 的 EKF（轮速 + IMU 陀螺仪，可选融合 FAST-LIO2 位姿），
-  航向由陀螺仪测量，转弯打滑时仍准确。
-  AMCL 每移动 `0.1 m` 或转动 `0.1 rad` 更新一次。
+- 全局定位（发布 `map → odom`），用 `localizer:=` 选择：
+  - `ndt`（默认）：[lidar_localization_ros2](../third_party/lidar_localization_ros2)
+    把每帧 16 线点云用 NDT 配准到 FAST-LIO 建的 PCD 地图，配准初值取自 EKF 的
+    `odom → base_footprint`。配置见 `config/lidar_localization.yaml`；
+    配准得分高于 `score_threshold` 的帧被拒绝，保留上一次的 `map → odom`。
+  - `amcl`：二维粒子滤波，只用雷达中间一线匹配二维栅格，每移动 `0.1 m` 或转动 `0.1 rad` 更新。
+- 局部里程计 `odom → base_footprint` 来自 `scout_mini_sim` 的 EKF（轮速 + IMU 陀螺仪，
+  可选融合 FAST-LIO2 位姿），航向由陀螺仪测量，转弯打滑时仍准确。
 - 初始保守矩形 footprint 为 `0.66 × 0.60 m`（覆盖底盘与车轮），另加 `0.02 m` padding；
   线速度上限 `1.0 m/s`（加减速 `1.0 m/s²`），角速度上限 `0.8 rad/s`（全速时最小转弯半径约 1.25 m）。这些不是实车标定参数。
   角速度上限与 Gazebo DiffDrive 插件的 `max_angular_velocity` 相同；调整速度时，
@@ -119,7 +128,8 @@ AMCL 默认以 `initial_pose:="0 0 0"`（map 坐标，米、弧度）作为初�
   详见 `nav2_params.yaml` 开头的注释。
 - 局部控制器为 Regulated Pure Pursuit（RPP）：沿全局路径追踪前方一点，
   弯道半径小于 `1.25 m` 或靠近障碍物时自动减速，车头偏离路径超过 45° 时先原地转向。
-  NavFn 全局规划，二维激光障碍层与膨胀层；不包含三维避障。
+  全局规划为 Smac Planner 2D（A*，代价参与路径代价，自带平滑），二维激光障碍层与膨胀层；
+  不包含三维避障。
   全局代价地图膨胀半径 `1.0 m`（局部 `0.65 m`），让全局路径尽量沿通道中间走。
   雷达平面之外的低矮/悬空障碍不保证可检测。
 - 不要启动实车 `scout_mini_base`，不要让遥控与 Nav2 同时发布速度。

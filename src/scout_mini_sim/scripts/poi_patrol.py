@@ -210,8 +210,9 @@ def wait_for_navigation(nav, buffer, args):
 
     # ---- 第 1 步：逐个查询生命周期节点，直到状态为 active ----
     nodes = ["bt_navigator", "planner_server", "controller_server"]
-    if args.localizer != "none":
-        nodes.insert(0, args.localizer)  # amcl 或 slam_toolbox 也必须已激活
+    if args.localizer not in ("none", "auto"):
+        nodes.insert(0, args.localizer)  # 指定了定位节点名时，它也必须已激活
+    # auto：不关心是哪个定位节点（AMCL 或三维 NDT），下面等到定位 TF 可用即可
     for name in nodes:
         client = nav.create_client(GetState, name.rstrip("/") + "/get_state")
         try:
@@ -482,7 +483,8 @@ def main(argv=None):
     parser.add_argument("--start-y", type=float, help="与 --start-x 一同提供，属于 --frame")
     # --- ROS 话题与节点 ---
     parser.add_argument("--image-topic", default="/camera/color/image_raw")
-    parser.add_argument("--localizer", default="amcl", help="amcl、slam_toolbox 或 none")
+    parser.add_argument("--localizer", default="auto",
+                        help="auto（默认，只等定位 TF）、lidar_localization、amcl、slam_toolbox 或 none")
     parser.add_argument("--use-sim-time", action=argparse.BooleanOptionalAction, default=True,
                         help="默认使用 /clock；实车传 --no-use-sim-time")
     parser.add_argument("--cmd-vel-topic", default="/cmd_vel", help="退出时停车话题")
