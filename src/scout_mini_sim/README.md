@@ -24,9 +24,19 @@ ros2 launch scout_mini_sim sim.launch.py
 ```zsh
 ros2 launch scout_mini_sim sim.launch.py rviz:=true
 ros2 launch scout_mini_sim sim.launch.py cameras:=false
+ros2 launch scout_mini_sim sim.launch.py depth_camera:=true   # 额外开启深度相机
 ros2 launch scout_mini_sim sim.launch.py gui:=false
 ```
 
+
+### 性能
+
+彩色相机默认 1280×720、5 Hz，深度相机默认关闭，以减小渲染负担。若日志出现
+`libEGL warning: egl: failed to create dri2 screen`，说明 Gazebo 没有用上显卡，
+雷达和相机都在 CPU 上软件渲染（可用 `glxinfo -B` 查看，`llvmpipe` 即软件渲染）。
+此时 CPU 很容易被占满，表现为 FAST-LIO 报 `IMU gap`、EKF 报 `Failed to meet update rate`、
+代价地图丢弃激光帧，定位和导航随之变差。巡检时建议加 `gui:=false` 关闭 Gazebo 窗口，
+导航 RViz 也会占用不少 CPU。Gazebo 窗口右下角的 RTF 低于 0.8 时，应先降低负载。
 
 ## 启动 FAST-LIO2建图
 

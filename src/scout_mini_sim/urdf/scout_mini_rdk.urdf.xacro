@@ -18,6 +18,10 @@
        Set enable_cameras:=false when only lidar/IMU are needed (e.g. FAST-LIO),
        otherwise the lidar and IMU fall well below their configured rates. -->
   <xacro:arg name="enable_cameras" default="true"/>
+  <!-- Depth camera is off by default: POI patrol only needs colour snapshots,
+       and without GPU acceleration (software rendering) a 1280x720 @ 30 Hz depth
+       image costs as much CPU as the rest of the simulation together. -->
+  <xacro:arg name="enable_depth" default="false"/>
 
   <xacro:property name="PI" value="3.1415926535897931"/>
 
@@ -250,12 +254,14 @@
       <topic>/camera/color/image</topic>
       <ignition_frame_id>camera_color_optical_frame</ignition_frame_id>
       <always_on>true</always_on>
-      <update_rate>30</update_rate>
+      <!-- 5 Hz / 1280x720 is enough for patrol snapshots and renders ~13x fewer
+           pixels than 1920x1080 @ 30 Hz, which starved lidar, IMU and Nav2. -->
+      <update_rate>5</update_rate>
       <camera>
         <horizontal_fov>1.2113</horizontal_fov>
         <image>
-          <width>1920</width>
-          <height>1080</height>
+          <width>1280</width>
+          <height>720</height>
           <format>R8G8B8</format>
         </image>
         <clip>
@@ -266,6 +272,7 @@
     </sensor>
   </gazebo>
 
+  <xacro:if value="$(arg enable_depth)">
   <gazebo reference="camera_depth_frame">
     <sensor name="d435_depth" type="depth_camera">
       <topic>/camera/depth/image</topic>
@@ -286,6 +293,7 @@
       </camera>
     </sensor>
   </gazebo>
+  </xacro:if>
   </xacro:if>
 
   <link name="imu_link"/>

@@ -15,9 +15,11 @@ import xacro
 def launch_sim(context):
     share = Path(get_package_share_directory("scout_mini_sim"))
     cameras = LaunchConfiguration("cameras").perform(context).lower() == "true"
+    depth = LaunchConfiguration("depth_camera").perform(context).lower() == "true"
     robot_description = xacro.process_file(
         str(share / "urdf" / "scout_mini_rdk.urdf.xacro"),
-        mappings={"enable_cameras": "true" if cameras else "false"},
+        mappings={"enable_cameras": "true" if cameras else "false",
+                  "enable_depth": "true" if cameras and depth else "false"},
     ).toxml()
     gui = LaunchConfiguration("gui").perform(context).lower() == "true"
     world = LaunchConfiguration("world").perform(context)
@@ -100,6 +102,11 @@ def generate_launch_description():
             "cameras", default_value="true", choices=["true", "false"],
             description="Enable the D435 color/depth sensors; turn off to keep "
                         "lidar and IMU at full rate (e.g. when running FAST-LIO)",
+        ),
+        DeclareLaunchArgument(
+            "depth_camera", default_value="false", choices=["true", "false"],
+            description="Also render the D435 depth camera (heavy without GPU rendering); "
+                        "only used when cameras:=true",
         ),
         DeclareLaunchArgument(
             "world", default_value=str(
