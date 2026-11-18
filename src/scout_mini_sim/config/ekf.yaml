@@ -1,10 +1,11 @@
-# robot_localization EKF：融合轮式里程计和 IMU，发布 /odom 与 TF odom -> base_footprint。
+# robot_localization EKF：融合 FAST-LIO2、轮式里程计和 IMU，发布 /odom 与 TF odom -> base_footprint。
 #
-# 为什么不直接用轮式里程计：Scout Mini 是四轮滑移转向，转弯时车轮打滑，
-# 只靠轮速积分的航向误差会随转速迅速增大，AMCL 每次修正时位姿就会跳变。
-# 这里各取所长：
-#   - 前进速度 vx（以及 vy=0 的差速约束）来自轮式里程计 /wheel/odom
-#   - 航向角速度 vyaw 来自 IMU 陀螺仪 /imu/data，不受打滑影响
+# 各传感器的分工：
+#   - FAST-LIO2 位姿 /lio/odom（x、y、yaw，10 Hz）：位置和航向的主要来源，不受车轮打滑影响。
+#     由 lio_to_odom.py 从 FAST-LIO 的 /Odometry 换算而来，只有启动 lio.launch.py 时才有。
+#   - 轮式里程计 /wheel/odom（vx，以及差速约束 vy=0）：补齐两帧雷达之间的平移。
+#   - IMU 陀螺仪 /imu/data（vyaw）：补齐两帧雷达之间的转动。
+# 没有启动 FAST-LIO 时，EKF 只用轮速 + IMU，仍能正常输出（航向不受打滑影响，位置会慢慢漂移）。
 # 输出在 sim.launch.py 中重映射为 /odom，Nav2 等下游节点无需修改。
 ekf_filter_node:
   ros__parameters:
@@ -18,6 +19,11 @@ ekf_filter_node:
     base_link_frame: base_footprint
     world_frame: odom         # 本 EKF 只做局部（连续、无跳变）里程计
 
+    # FAST-LIO 处理一帧需要几十毫秒，位姿到达时已经"过时"。开启后 EKF 会回退到
+    # 该时间戳重新融合，而不是把旧位置当成现在的位置（否则车越快，位姿越往回拉）。
+    smooth_lagged_data: true
+    history_length: 1.0       # s，需大于 FAST-LIO 的最大处理延迟
+
     # 每个 *_config 依次为：
     # [x, y, z, roll, pitch, yaw,
     #  vx, vy, vz, vroll, vpitch, vyaw,
@@ -29,6 +35,14 @@ ekf_filter_node:
                    false, false, false,
                    false, false, false]
     odom0_queue_size: 10
+
+    odom1: /lio/odom
+    odom1_config: [true,  true,  false,
+                   false, false, true,
+                   false, false, false,
+                   false, false, false,
+                   false, false, false]
+    odom1_queue_size: 10
 
     imu0: /imu/data
     imu0_config: [false, false, false,

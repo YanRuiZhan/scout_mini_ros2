@@ -44,7 +44,7 @@ ros2 launch scout_mini_sim sim.launch.py
 ros2 launch scout_mini_sim lio.launch.py
 ```
 
-建图启动后保持小车静止，等日志出现 `IMU Initial Done` 再行驶。`settle_time` 控制转发点云前的等待时长，按传感器时间计算；低帧率或暂停仿真不会提前结束等待。需要更长落地时间时可使用 `ros2 launch scout_mini_sim lio.launch.py settle_time:=2.0`。重启或重置 Gazebo 后，也应重启 FAST-LIO，清除上一轮地图。
+建图启动后保持小车静止，等日志出现 `IMU Initial Done` 再行驶。导航时只需要 FAST-LIO 的里程计，用 `mapping:=false` 启动：它关闭累积地图、轨迹和 PCD 保存，这三项会随每帧增长，长时间运行会越来越慢。`settle_time` 控制转发点云前的等待时长，按传感器时间计算；低帧率或暂停仿真不会提前结束等待。需要更长落地时间时可使用 `ros2 launch scout_mini_sim lio.launch.py settle_time:=2.0`。重启或重置 Gazebo 后，也应重启 FAST-LIO，清除上一轮地图。
 
 
 ### 地图倾斜 / Z 漂移
@@ -61,25 +61,36 @@ ros2 launch scout_mini_sim lio.launch.py
 
 ### 里程计和 TF
 
-仿真底盘只发布原始轮式里程计 `/wheel/odom`。`robot_localization` 的 EKF（`config/ekf.yaml`）融合轮速的前进速度和 IMU 陀螺仪的航向角速度，发布 `/odom` 和 TF `odom → base_footprint`。滑移转向车转弯时车轮打滑，只靠轮速的航向误差很大；IMU 不受打滑影响，因此 `/odom` 在快速转弯时也保持准确。FAST-LIO2 会发布 `/Odometry` 和 TF `camera_init → body`。`lio_odom_bridge` 再发布 `camera_init → odom`，把两棵 TF 树连接起来；它不会融合两路里程计，也不提供已保存地图的重定位。
+里程计由 `robot_localization` 的 EKF（`config/ekf.yaml`，随 `sim.launch.py` 启动）融合三路数据，发布 `/odom` 和 TF `odom → base_footprint`（50 Hz）：
+
+| 来源 | 融合的量 | 作用 |
+|---|---|---|
+| FAST-LIO2 `/lio/odom`（10 Hz） | x、y、yaw | 位置和航向的主要来源，不受车轮打滑影响 |
+| 轮式里程计 `/wheel/odom` | vx（及差速约束 vy=0） | 补齐两帧雷达之间的平移 |
+| IMU `/imu/data` | 航向角速度 | 补齐两帧雷达之间的转动 |
+
+`lio_to_odom.py`（随 `lio.launch.py` 启动）把 FAST-LIO 的 `/Odometry`（`camera_init → body`）换算成 odom 下的底盘位姿 `/lio/odom`。收到第一帧时，它用 EKF 当时的位姿对齐两个坐标系，并发布静态 TF `odom → camera_init`，所以先开仿真、晚些再启动 FAST-LIO 也不会让 odom 跳变。FAST-LIO 每帧有几十毫秒处理延迟，EKF 开启了 `smooth_lagged_data`，会回退到雷达时间戳重新融合。
+
+没有启动 FAST-LIO 时，EKF 只用轮速 + IMU：航向仍不受打滑影响，但位置会慢慢漂移，导航时应启动 FAST-LIO。
 
 ```text
-camera_init
-├── body                 # FAST-LIO2
-└── odom                 # lio_odom_bridge
-    └── base_footprint   # EKF（轮速 + IMU）
-        └── base_link    # 机器人模型和传感器
+map                          # AMCL（导航时）
+└── odom
+    ├── base_footprint       # EKF（LIO + 轮速 + IMU）
+    │   └── base_link        # 机器人模型和传感器
+    └── camera_init          # lio_to_odom（静态，首帧对齐）
+        └── body             # FAST-LIO2
 ```
 
 查看话题和 TF：
 
 ```zsh
 ros2 topic hz /scout/lidar/points
-ros2 topic hz /imu/data
-ros2 run tf2_ros tf2_echo camera_init base_link --ros-args -p use_sim_time:=true
+ros2 topic hz /lio/odom
+ros2 run tf2_ros tf2_echo odom base_footprint --ros-args -p use_sim_time:=true
 ```
 
-`lio_odom_bridge` 只应运行一份。若 AMCL 或其他全局定位节点负责 `odom` 的父坐标系，启动 LIO 时加 `connect_odom:=false`，避免 TF 冲突。
+重启 FAST-LIO 时整个 `lio.launch.py` 一起重启，`lio_to_odom` 会重新对齐，odom 保持连续。
 
 ## POI 自动巡检
 
@@ -133,11 +144,13 @@ y_map = sin(YAW) * x_world + cos(YAW) * y_world + TY
 
 ```zsh
 ros2 launch scout_mini_sim sim.launch.py cameras:=true
+ros2 launch scout_mini_sim lio.launch.py mapping:=false rviz:=false
 ros2 launch scout_mini_navigation navigation.launch.py map:=/绝对路径/对应地图.yaml
 ```
 
+启动 FAST-LIO 后保持小车静止，等日志出现 `IMU Initial Done`。
 AMCL 模式先在 RViz 设置 **2D Pose Estimate**，确认激光与地图对齐。
-脚本只等待定位，不自动重置初始位姿。不要运行默认的 `lio.launch.py` TF 连接节点；
+脚本只等待定位，不自动重置初始位姿。
 导航地图建立流程与 TF 约束见 [导航说明](../scout_mini_navigation/README.md)。
 对已经转换到 map 的 POI 文件，可在工作空间根目录运行：
 

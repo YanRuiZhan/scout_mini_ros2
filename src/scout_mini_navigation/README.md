@@ -46,9 +46,11 @@ source install/setup.zsh
 后续可结合建图轨迹/原始扫描做射线重建，或在核实场景后采用受限的地面插补。
 
 必须启动与 PCD 对应的 Gazebo 场景；默认 `scout_mini.sdf` 不一定是 room_03 的建图场景。
-导航时关闭 LIO 和 SLAM Toolbox，以 AMCL 管理全局定位：
+导航时关闭 SLAM Toolbox，以 AMCL 管理全局定位；FAST-LIO 只作为里程计运行
+（`mapping:=false`），启动后保持小车静止直到出现 `IMU Initial Done`：
 
 ```zsh
+ros2 launch scout_mini_sim lio.launch.py mapping:=false rviz:=false
 ros2 launch scout_mini_navigation navigation.launch.py map:=/绝对路径/maps/room_03_grid.yaml
 ```
 
@@ -83,9 +85,11 @@ ros2 run nav2_map_server map_saver_cli -f maps/scout_mini --ros-args -p use_sim_
 
 ## 使用已有地图导航
 
-保留仿真，停止上面的建图导航 launch，再执行：
+保留仿真，停止上面的建图导航 launch，启动 FAST-LIO 里程计（保持静止直到
+`IMU Initial Done`）后再启动导航：
 
 ```zsh
+ros2 launch scout_mini_sim lio.launch.py mapping:=false rviz:=false
 ros2 launch scout_mini_navigation navigation.launch.py map:=/绝对路径/maps/scout_mini.yaml
 ```
 
@@ -100,7 +104,8 @@ ros2 launch scout_mini_navigation navigation.launch.py map:=/绝对路径/maps/s
   保留 Humble 的插件名称和行为树插件列表。
 - 全局坐标系 `map`，局部坐标系 `odom`，底盘参考系 `base_footprint`。
 - 定位：AMCL（2D 激光匹配先验栅格地图）发布 `map → odom`；`odom → base_footprint`
-  来自 `scout_mini_sim` 的 EKF（轮速 + IMU 陀螺仪），转弯打滑时航向仍准确。
+  来自 `scout_mini_sim` 的 EKF（FAST-LIO2 位姿 + 轮速 + IMU 陀螺仪），不受车轮打滑影响。
+  不启动 FAST-LIO 也能导航，但里程计退化为轮速 + IMU，位置会逐渐漂移。
   AMCL 每移动 `0.1 m` 或转动 `0.1 rad` 更新一次。
 - 初始保守矩形 footprint 为 `0.66 × 0.60 m`（覆盖底盘与车轮），另加 `0.02 m` padding；
   线速度上限 `1.5 m/s`（加减速 `1.0 m/s²`），角速度上限 `0.8 rad/s`。这些不是实车标定参数。
@@ -110,8 +115,6 @@ ros2 launch scout_mini_navigation navigation.launch.py map:=/绝对路径/maps/s
   详见 `nav2_params.yaml` 开头的注释。
 - DWB 局部控制、NavFn 全局规划，二维激光障碍层与膨胀层；不包含三维避障。
   雷达平面之外的低矮/悬空障碍不保证可检测。
-- 不要同时启动 `lio.launch.py` 的默认 TF 连接节点：SLAM / AMCL 独占 `map → odom`，
-  LIO 连接节点也会为 `odom` 指定父坐标系。初次验证建议完全不启动 LIO。
 - 不要启动实车 `scout_mini_base`，不要让遥控与 Nav2 同时发布速度。
 - 仿真底盘没有命令超时停车。结束导航前应取消目标并显式停车；
   不能把关闭 launch 当作可靠的急停：

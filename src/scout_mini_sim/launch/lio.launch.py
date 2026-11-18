@@ -1,7 +1,15 @@
 """Run FAST-LIO2 against the Scout Mini Gazebo simulation.
 
-Start ``sim.launch.py`` first. This launch adds the point-field adapter and
-starts FAST-LIO with the simulation's instantaneous-frame timing mode.
+Start ``sim.launch.py`` first and keep the robot still until FAST-LIO logs
+``IMU Initial Done``. This launch adds the point-field adapter, starts FAST-LIO
+with the simulation's instantaneous-frame timing mode, and feeds its pose into
+the odometry EKF through ``lio_to_odom.py``.
+
+- Mapping (default ``mapping:=true``): accumulate and publish the full map and
+  save it as PCD on shutdown.
+- Navigation (``mapping:=false``): odometry only. The accumulated map, the PCD
+  buffer and the path grow with every scan, so they are turned off to keep the
+  per-scan cost constant during long runs.
 """
 
 from pathlib import Path
@@ -17,19 +25,19 @@ from launch_ros.parameter_descriptions import ParameterValue
 
 def generate_launch_description():
     sim_share = Path(get_package_share_directory("scout_mini_sim"))
+    mapping = ParameterValue(LaunchConfiguration("mapping"), value_type=bool)
 
     return LaunchDescription([
         DeclareLaunchArgument("rviz", default_value="true",
                               choices=["true", "false"]),
         DeclareLaunchArgument(
+            "mapping", default_value="true", choices=["true", "false"],
+            description="true: build and save the map; false: odometry only for navigation",
+        ),
+        DeclareLaunchArgument(
             "settle_time", default_value="1.0",
             description="Seconds of LiDAR timestamps to wait before IMU initialization; "
                         "keep the robot stationary during startup",
-        ),
-        DeclareLaunchArgument(
-            "connect_odom", default_value="true", choices=["true", "false"],
-            description="Publish camera_init -> odom from time-aligned LIO/TF; "
-                        "disable when AMCL or another localizer owns odom's parent",
         ),
         Node(
             package="scout_mini_sim",
@@ -50,16 +58,21 @@ def generate_launch_description():
             name="fastlio_mapping",
             parameters=[
                 str(sim_share / "config" / "fast_lio_scout.yaml"),
-                {"use_sim_time": True},
+                {
+                    "use_sim_time": True,
+                    "publish.map_en": mapping,
+                    "publish.path_en": mapping,
+                    "pcd_save.pcd_save_en": mapping,
+                },
             ],
             output="screen",
         ),
+        # FAST-LIO /Odometry -> /lio/odom (odom frame), fused by the EKF in sim.launch.py.
         Node(
             package="scout_mini_sim",
-            executable="lio_odom_bridge.py",
-            name="lio_odom_bridge",
+            executable="lio_to_odom.py",
+            name="lio_to_odom",
             parameters=[{"use_sim_time": True}],
-            condition=IfCondition(LaunchConfiguration("connect_odom")),
             output="screen",
         ),
         Node(

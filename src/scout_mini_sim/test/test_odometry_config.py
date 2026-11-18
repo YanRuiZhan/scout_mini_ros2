@@ -36,6 +36,18 @@ def test_ekf_is_the_only_odom_tf_publisher():
     assert ekf["imu0_config"][11] is True
 
 
+def test_ekf_fuses_lio_pose_with_lag_compensation():
+    ekf = yaml.safe_load((ROOT / "config/ekf.yaml").read_text())
+    ekf = ekf["ekf_filter_node"]["ros__parameters"]
+    node = (ROOT / "scripts/lio_to_odom.py").read_text()
+    assert f'"output_topic": "{ekf["odom1"]}"' in node
+    # x, y and yaw from LIO; everything else comes from the wheels and the gyro.
+    assert [i for i, used in enumerate(ekf["odom1_config"]) if used] == [0, 1, 5]
+    # LIO poses arrive tens of ms late; without rewinding, fusing them as
+    # "now" would pull the pose back along the path.
+    assert ekf["smooth_lagged_data"] is True and ekf["history_length"] >= 0.5
+
+
 def test_nav2_limits_fit_the_simulated_base():
     plugin = diff_drive()
     params = yaml.safe_load(NAV2.read_text())
