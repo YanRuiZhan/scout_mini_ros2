@@ -52,14 +52,22 @@ def test_ekf_fuses_lio_pose_with_lag_compensation():
 def test_nav2_limits_fit_the_simulated_base():
     plugin = diff_drive()
     params = yaml.safe_load(NAV2.read_text())
-    dwb = params["controller_server"]["ros__parameters"]["FollowPath"]
+    rpp = params["controller_server"]["ros__parameters"]["FollowPath"]
     smoother = params["velocity_smoother"]["ros__parameters"]
     behavior = params["behavior_server"]["ros__parameters"]
     local = params["local_costmap"]["local_costmap"]["ros__parameters"]
+    max_linear = float(plugin.findtext("max_linear_velocity"))
+    max_angular = float(plugin.findtext("max_angular_velocity"))
 
-    assert smoother["max_velocity"][0] == dwb["max_vel_x"] == dwb["max_speed_xy"]
-    assert smoother["max_velocity"][2] == dwb["max_vel_theta"] == behavior["max_rotational_vel"]
-    assert dwb["max_vel_x"] <= float(plugin.findtext("max_linear_velocity"))
-    assert dwb["max_vel_theta"] <= float(plugin.findtext("max_angular_velocity"))
-    # DWB drops trajectories that leave the rolling local costmap.
-    assert dwb["max_vel_x"] * dwb["sim_time"] < min(local["width"], local["height"]) / 2
+    assert rpp["plugin"].endswith("RegulatedPurePursuitController")
+    assert smoother["max_velocity"][0] == rpp["desired_linear_vel"] <= max_linear
+    assert (smoother["max_velocity"][2] == rpp["rotate_to_heading_angular_vel"]
+            == behavior["max_rotational_vel"] <= max_angular)
+    # Curvature regulation keeps v / r within the base's yaw rate limit.
+    assert rpp["desired_linear_vel"] / rpp["regulated_linear_scaling_min_radius"] <= max_angular + 1e-9
+    # Cost regulation must decode the local inflation layer it reads.
+    assert rpp["inflation_cost_scaling_factor"] == local["inflation_layer"]["cost_scaling_factor"]
+    # The carrot and the collision check have to stay on the rolling local costmap.
+    assert rpp["max_lookahead_dist"] < min(local["width"], local["height"]) / 2
+    # Clipping one component must not bend the commanded arc.
+    assert smoother["scale_velocities"] is True

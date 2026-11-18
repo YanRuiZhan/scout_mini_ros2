@@ -1,15 +1,15 @@
 # Based on the installed ROS 2 Humble nav2_bringup and slam_toolbox defaults.
 # Scout Mini simulation settings; tune before real hardware use.
 #
-# 速度上限需要以下几处保持一致，改一处时其余也要同步：
-#   1. controller_server.FollowPath (DWB)：max_vel_x / max_speed_xy / max_vel_theta
+# 速度上限需要以下几处保持一致，改一处时其余也要同步
+# （scout_mini_sim/test/test_odometry_config.py 会检查）：
+#   1. controller_server.FollowPath (RPP)：desired_linear_vel、rotate_to_heading_angular_vel，
+#      以及 regulated_linear_scaling_min_radius = 线速度 / 角速度上限
 #   2. velocity_smoother：max_velocity / max_accel / max_decel（最终发往 /cmd_vel）
 #   3. behavior_server：max_rotational_vel（原地旋转恢复行为）
-#   4. 局部代价地图 width/height：半宽须大于 max_vel_x * sim_time
-#   5. Gazebo DiffDrive 插件（scout_mini_sim/urdf/scout_mini_rdk.urdf.xacro）：
+#   4. Gazebo DiffDrive 插件（scout_mini_sim/urdf/scout_mini_rdk.urdf.xacro）：
 #      max_linear_velocity=3.0 m/s，max_angular_velocity=0.8 rad/s
-# Nav2 的角速度若高于 Gazebo 上限，命令会被底盘截断，DWB 预测的轨迹与实际
-# 不符，跟踪误差变大，控制器会选择更慢的轨迹，实际车速明显低于设定上限。
+# Nav2 的角速度若高于 Gazebo 上限，命令会被底盘截断，车走不出控制器算出的弧线。
 amcl:
   ros__parameters:
     use_sim_time: true
@@ -138,52 +138,43 @@ controller_server:
       plugin: nav2_controller::SimpleGoalChecker
       xy_goal_tolerance: 0.25
       yaw_goal_tolerance: 0.25
+    # Regulated Pure Pursuit：在路径前方取一个追踪点，按几何关系算出追过去的圆弧。
+    # 天生沿路径走；按弯道曲率和离障碍物的距离自动减速，直道跑满速、弯道和窄处慢下来。
     FollowPath:
-      plugin: dwb_core::DWBLocalPlanner
-      debug_trajectory_details: false
-      min_vel_x: 0.0
-      min_vel_y: 0.0
-      max_vel_x: 1.0            # 线速度上限 (m/s)，与 velocity_smoother 一致
-      max_vel_y: 0.0
-      max_vel_theta: 0.8        # 不超过 Gazebo DiffDrive 的 max_angular_velocity
-      min_speed_xy: 0.0
-      max_speed_xy: 1.0         # 差速底盘 vy=0，取与 max_vel_x 相同
-      min_speed_theta: 0.0
-      acc_lim_x: 1.0
-      acc_lim_y: 0.0
-      acc_lim_theta: 1.5
-      decel_lim_x: -1.0
-      decel_lim_y: 0.0
-      decel_lim_theta: -1.5
-      vx_samples: 20
-      vy_samples: 1
-      vtheta_samples: 20
-      sim_time: 1.7             # 前向预测 1.0 m/s * 1.7 s = 1.7 m，须小于局部代价地图半宽
-      linear_granularity: 0.05
-      angular_granularity: 0.025
+      plugin: nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController
+      desired_linear_vel: 1.0            # 直道速度 (m/s)，与 velocity_smoother 一致
+      # 追踪点距离 = 速度 * lookahead_time，限制在 [min, max] 内；越远越平滑，越近越贴路径
+      use_velocity_scaled_lookahead_dist: true
+      lookahead_dist: 0.8
+      lookahead_time: 1.2
+      min_lookahead_dist: 0.4
+      max_lookahead_dist: 1.2
+      # 弯道减速：转弯半径小于该值时线速度按比例降低，使角速度 = 速度 / 半径 不超过
+      # 底盘上限。取 desired_linear_vel / 角速度上限 = 1.0 / 0.8 = 1.25 m
+      use_regulated_linear_velocity_scaling: true
+      regulated_linear_scaling_min_radius: 1.25
+      regulated_linear_scaling_min_speed: 0.25
+      # 窄处减速：离障碍物 cost_scaling_dist 以内按代价降速；
+      # inflation_cost_scaling_factor 须与局部代价地图膨胀层的 cost_scaling_factor 一致
+      use_cost_regulated_linear_velocity_scaling: true
+      cost_scaling_dist: 0.6
+      cost_scaling_gain: 1.0
+      inflation_cost_scaling_factor: 3.0
+      # 起步或掉头：车头与路径方向相差超过 45° 时先原地转向
+      use_rotate_to_heading: true
+      rotate_to_heading_min_angle: 0.785
+      rotate_to_heading_angular_vel: 0.8   # 不超过 Gazebo DiffDrive 的 max_angular_velocity
+      max_angular_accel: 1.5
+      # 到达目标附近时减速
+      min_approach_linear_velocity: 0.05
+      approach_velocity_scaling_dist: 1.0
+      # 沿追踪弧线前向检查碰撞，预计 1 s 内会撞上就停车（随后行为树重新规划）
+      use_collision_detection: true
+      max_allowed_time_to_collision_up_to_carrot: 1.0
+      allow_reversing: false
+      use_interpolation: true
+      max_robot_pose_search_dist: 10.0
       transform_tolerance: 0.2
-      xy_goal_tolerance: 0.25
-      trans_stopped_velocity: 0.05
-      short_circuit_trajectory_evaluation: true
-      stateful: true
-      critics:
-      - RotateToGoal
-      - Oscillation
-      - BaseObstacle
-      - GoalAlign
-      - PathAlign
-      - PathDist
-      - GoalDist
-      BaseObstacle.scale: 0.02
-      PathAlign.scale: 32.0
-      PathAlign.forward_point_distance: 0.1
-      GoalAlign.scale: 24.0
-      GoalAlign.forward_point_distance: 0.1
-      PathDist.scale: 32.0
-      GoalDist.scale: 24.0
-      RotateToGoal.scale: 32.0
-      RotateToGoal.slowing_factor: 5.0
-      RotateToGoal.lookahead_time: -1.0
 local_costmap:
   local_costmap:
     ros__parameters:
@@ -193,8 +184,7 @@ local_costmap:
       robot_base_frame: base_footprint
       use_sim_time: true
       rolling_window: true
-      # 8 m 见方（车前方 4 m）：须大于 DWB 预测距离 max_vel_x * sim_time = 1.7 m，
-      # 否则高速轨迹超出地图被 DWB 丢弃，实际速度达不到上限。
+      # 8 m 见方（车前方 4 m）：需覆盖 RPP 的追踪点（max_lookahead_dist）和碰撞检查范围。
       width: 8
       height: 8
       resolution: 0.05
@@ -261,7 +251,7 @@ global_costmap:
         map_subscribe_transient_local: true
       inflation_layer:
         plugin: nav2_costmap_2d::InflationLayer
-        # 让全局路径沿通道中间走，转弯时离货架远一些，给 DWB 留出跟踪误差的余量。
+        # 让全局路径沿通道中间走，转弯时离货架远一些，给局部控制器留出跟踪误差的余量。
         # 车身外接圆半径约 0.47 m；0.65 m 只多出 0.18 m，路径会紧贴货架端头绕过，
         # 高速切弯时车身擦到货架卡住。衰减系数越小，离障碍物越远的格子代价越高。
         cost_scaling_factor: 2.0
@@ -347,7 +337,8 @@ velocity_smoother:
   ros__parameters:
     use_sim_time: true
     smoothing_frequency: 20.0
-    scale_velocities: false
+    # 某一分量被截断时其余分量按比例缩小，保持控制器算出的弧线不变
+    scale_velocities: true
     feedback: OPEN_LOOP
     # [vx, vy, wz]，须与 controller_server.FollowPath 的上限一致
     max_velocity:

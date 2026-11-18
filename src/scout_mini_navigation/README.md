@@ -109,11 +109,12 @@ ros2 launch scout_mini_navigation navigation.launch.py map:=/绝对路径/maps/s
   AMCL 每移动 `0.1 m` 或转动 `0.1 rad` 更新一次。
 - 初始保守矩形 footprint 为 `0.66 × 0.60 m`（覆盖底盘与车轮），另加 `0.02 m` padding；
   线速度上限 `1.0 m/s`（加减速 `1.0 m/s²`），角速度上限 `0.8 rad/s`（全速时最小转弯半径约 1.25 m）。这些不是实车标定参数。
-  局部代价地图为 `8 × 8 m`，保证 DWB 的预测轨迹（`max_vel_x × sim_time`）不超出地图。
   角速度上限与 Gazebo DiffDrive 插件的 `max_angular_velocity` 相同；调整速度时，
-  DWB、`velocity_smoother`、`behavior_server` 和 Gazebo 插件的上限需一起修改，
+  RPP、`velocity_smoother`、`behavior_server` 和 Gazebo 插件的上限需一起修改，
   详见 `nav2_params.yaml` 开头的注释。
-- DWB 局部控制、NavFn 全局规划，二维激光障碍层与膨胀层；不包含三维避障。
+- 局部控制器为 Regulated Pure Pursuit（RPP）：沿全局路径追踪前方一点，
+  弯道半径小于 `1.25 m` 或靠近障碍物时自动减速，车头偏离路径超过 45° 时先原地转向。
+  NavFn 全局规划，二维激光障碍层与膨胀层；不包含三维避障。
   全局代价地图膨胀半径 `1.0 m`（局部 `0.65 m`），让全局路径尽量沿通道中间走。
   雷达平面之外的低矮/悬空障碍不保证可检测。
 - 不要启动实车 `scout_mini_base`，不要让遥控与 Nav2 同时发布速度。
