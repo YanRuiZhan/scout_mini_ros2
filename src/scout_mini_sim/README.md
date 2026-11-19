@@ -217,6 +217,9 @@ ros2 run scout_mini_sim poi_patrol.py --poi /绝对路径/poi_in_map.yaml \
 `--timeout` 为单目标导航墙钟超时；`--image-timeout` 控制新帧等待时间。
 相机若以 `cameras:=false` 关闭，会记录 `image_result=no_image`。
 
+所有点巡检完后（无论各点成败），默认导航回出发时的位置和朝向，CSV 最后一行
+`id=HOME` 记录返回结果；`--no-return-home` 可关闭。排序仍为贪心最近邻，返回起点是追加的最后一段。
+
 每次巡检在 `patrol_out/日期_时间_随机后缀/` 下保存 PNG 和 `patrol_log.csv`，
 每完成一个点就写入 CSV。`result` 区分 `reached`、`no_plan`、`rejected`、
 `timeout`、`canceled`、`failed` 等状态；`image_result` 单独记录 `saved`、

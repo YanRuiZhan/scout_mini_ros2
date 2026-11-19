@@ -8,7 +8,8 @@
 3. 对每个 POI，沿目标表面外法向退后若干米，得到"观测位姿"（机器人面朝目标）。
 4. 从机器人当前位置出发，按最近邻顺序排列 POI，减少来回跑。
 5. 依次：Nav2 规划 → 导航 → 到点稳定 → 拍一张新图像 → 写一行 CSV。
-6. 结束或 Ctrl+C 时取消导航目标，并向 /cmd_vel 发零速度停车。
+6. 全部巡检完后导航回出发时的位姿（--no-return-home 可关闭），也记一行 CSV。
+7. 结束或 Ctrl+C 时取消导航目标，并向 /cmd_vel 发零速度停车。
 
 使用前提
 --------
@@ -38,7 +39,7 @@ import yaml
 
 
 # CSV 日志的列，每个 POI 一行：
-#   order        巡检顺序（从 1 开始）
+#   order        巡检顺序（从 1 开始）；最后一行 id=HOME 为返回起点
 #   result       导航结果：reached / no_plan / rejected / timeout / canceled / failed / interrupted
 #   view_dist    实际采用的观测距离 (m)
 #   goal_*       发给 Nav2 的目标位姿；robot_* 为到达后从 TF 读到的实际位置
@@ -119,6 +120,11 @@ def view_pose(poi, dist):
     norm = math.hypot(normal["x"], normal["y"])
     nx, ny = normal["x"] / norm, normal["y"] / norm  # 归一化，配置里的法向不必是单位向量
     return target["x"] + dist * nx, target["y"] + dist * ny, math.atan2(-ny, -nx)
+
+
+def yaw_from_quaternion(q):
+    """四元数 -> 绕 Z 轴的航向角 (rad)。"""
+    return math.atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z))
 
 
 def order_nearest(pois, start_xy, dist):
@@ -304,6 +310,9 @@ def run(args, pois):
         # ------------------------------------------------------------------
         nav.get_logger().info("等待 Nav2 和定位 TF；AMCL 模式请在 RViz 设置初始位姿")
         current = wait_for_navigation(nav, buffer, args)
+        # 出发时的真实位姿（map 坐标），巡检结束后回到这里
+        home = (current.transform.translation.x, current.transform.translation.y,
+                yaw_from_quaternion(current.transform.rotation))
         if args.start_x is None:
             start_xy = (current.transform.translation.x, current.transform.translation.y)
         else:
@@ -439,8 +448,34 @@ def run(args, pois):
             finally:
                 write_log(log_path, rows)  # 无论成功失败，每个点结束都落盘
 
+        # ------------------------------------------------------------------
+        # 返回起点：所有 POI 结束后（无论成败）回到出发时的位置和朝向
+        # ------------------------------------------------------------------
         reached = sum(row["result"] == "reached" for row in rows)
-        nav.get_logger().info(f"完成: 到达 {reached}/{len(rows)}，记录: {log_path.resolve()}")
+        if args.return_home:
+            row = dict.fromkeys(LOG_FIELDS, "")
+            row.update(order=len(rows) + 1, id="HOME", type="return_home", result="error",
+                       goal_x=home[0], goal_y=home[1], goal_yaw=home[2])
+            rows.append(row)
+            try:
+                nav.get_logger().info(
+                    f"巡检结束，返回起点 ({home[0]:.2f}, {home[1]:.2f}, yaw {home[2]:.2f})"
+                )
+                navigate(make_pose(*home), row)
+                if row["result"] != "rejected":
+                    record_position({"id": "HOME"}, row)
+                if row["result"] != "reached":
+                    nav.get_logger().warning(f"未能返回起点：{row['result']}")
+            except KeyboardInterrupt:
+                row["result"] = "interrupted"
+                raise
+            finally:
+                write_log(log_path, rows)
+        nav.get_logger().info(
+            f"完成: 到达 {reached}/{len(pois)} 个 POI"
+            + (f"，返回起点 {rows[-1]['result']}" if args.return_home else "")
+            + f"，记录: {log_path.resolve()}"
+        )
     finally:
         # ------------------------------------------------------------------
         # 清理：取消未完成的目标 -> 发零速度停车 -> 销毁节点 -> 关闭 rclpy
@@ -495,6 +530,8 @@ def main(argv=None):
     parser.add_argument("--settle-time", type=float, default=0.5, help="到点后拍照前的静置时间 (s)")
     # --- 输出 ---
     parser.add_argument("--out", default="patrol_out", help="输出根目录，每次任务建立独立子目录")
+    parser.add_argument("--return-home", action=argparse.BooleanOptionalAction, default=True,
+                        help="巡检结束后回到出发时的位姿（默认开启；--no-return-home 关闭）")
     parser.add_argument("--dry-run", action="store_true", help="只打印观测位姿，不连接 ROS")
     args = parser.parse_args(argv)
 
@@ -521,6 +558,9 @@ def main(argv=None):
             for index, poi in enumerate(order_nearest(pois, start, args.dist[0]), 1):
                 x, y, yaw = view_pose(poi, args.dist[0])
                 print(f"{index:5d}  {poi['id']:<8} {poi['type']:<17} {x:7.2f} {y:7.2f} {yaw:8.3f}")
+            if args.return_home:
+                print(f"{'':5}  {'HOME':<8} {'return_home':<17} {start[0]:7.2f} {start[1]:7.2f}"
+                      "   （回到出发位姿）")
             return 0
 
         run(args, pois)

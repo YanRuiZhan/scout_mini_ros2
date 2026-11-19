@@ -97,8 +97,11 @@ def test_empty_config_is_rejected_before_ros(tmp_path, capsys):
     assert "没有可巡检" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("mode", ["reached", "rejected", "timeout", "no_plan", "interrupted"])
-def test_patrol_records_and_cancels_without_robot(tmp_path, monkeypatch, mode):
+@pytest.mark.parametrize("mode, return_home", [
+    ("reached", False), ("rejected", False), ("timeout", False), ("no_plan", False),
+    ("interrupted", False), ("reached", True), ("no_plan", True), ("interrupted", True),
+])
+def test_patrol_records_and_cancels_without_robot(tmp_path, monkeypatch, mode, return_home):
     # Real Humble message classes + CvBridge/OpenCV, fake only the navigation/TF
     # transport. No DDS node is created, and no velocity is sent to a robot.
     rclpy = pytest.importorskip("rclpy")
@@ -109,6 +112,7 @@ def test_patrol_records_and_cancels_without_robot(tmp_path, monkeypatch, mode):
     from sensor_msgs.msg import Image
 
     state = SimpleNamespace(cancel=0, spin=0, closed=False, stopped=0, ticks=0, callback=None)
+    goals = []
     transform = TransformStamped()
     transform.transform.translation.x = 1.0
     transform.transform.translation.y = 4.5
@@ -138,6 +142,7 @@ def test_patrol_records_and_cancels_without_robot(tmp_path, monkeypatch, mode):
             return None if mode == "no_plan" else SimpleNamespace(poses=[goal])
 
         def goToPose(self, goal):
+            goals.append(goal)
             return mode != "rejected"
 
         def isTaskComplete(self):
@@ -178,14 +183,25 @@ def test_patrol_records_and_cancels_without_robot(tmp_path, monkeypatch, mode):
     args = SimpleNamespace(use_sim_time=True, frame="map", base_frame="base_footprint",
                            start_x=None, start_y=None, out=str(tmp_path), dist=[2.5],
                            cmd_vel_topic="/cmd_vel", image_topic="/camera/color/image_raw",
-                           timeout=0.005, settle_time=0, image_timeout=3)
+                           timeout=0.005, settle_time=0, image_timeout=3,
+                           return_home=return_home)
     if mode == "interrupted":
         with pytest.raises(KeyboardInterrupt):
             patrol.run(args, [sample_poi()])
     else:
         patrol.run(args, [sample_poi()])
     with next(tmp_path.glob("*/patrol_log.csv")).open() as stream:
-        row = list(csv.DictReader(stream))[0]
+        all_rows = list(csv.DictReader(stream))
+    row = all_rows[0]
+    if return_home and mode != "interrupted":
+        # Even after a failed POI the robot heads back to where it started.
+        home = all_rows[-1]
+        assert len(all_rows) == 2 and home["id"] == "HOME" and home["result"] == "reached"
+        assert (float(home["goal_x"]), float(home["goal_y"])) == (1.0, 4.5)
+        last = goals[-1].pose
+        assert (last.position.x, last.position.y) == (1.0, 4.5)
+    else:
+        assert len(all_rows) == 1
     assert row["result"] == mode
     assert state.closed
     assert state.cancel == (1 if mode in ("timeout", "interrupted") else 0)

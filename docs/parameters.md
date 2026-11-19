@@ -230,6 +230,7 @@
 | `--timeout` | `300` s | 单个目标的导航超时 |
 | `--settle-time` | `0.5` s | 到点后拍照前的静置时间 |
 | `--image-timeout` | `3.0` s | 等待新图像的时间 |
+| `--return-home` | 开启 | 巡检结束后回到出发时的位姿；`--no-return-home` 关闭 |
 | `--localizer` | `auto` | `auto` 只等定位 TF；也可指定节点名，如 `lidar_localization`、`amcl` |
 | `--out` | `patrol_out` | 输出目录，每次巡检新建子目录 |
 | `--dry-run` | — | 只打印观测位姿，不连接 ROS |
