@@ -15,4 +15,5 @@ maps/
 /src/third_party/fast_lio_ros2/doc/*.pdf
 
 /src/scout_mini_sim/worlds/
-/src/scout_mini_sim/scripts/patrol_out/
+/patrol_out/
+/docs/
