@@ -42,7 +42,7 @@
 | `velocity_smoother.min_velocity` | `nav2` | `[-0.15, 0.0, -0.8]` | 倒车与反向转动上限 |
 | `velocity_smoother.max_accel` / `max_decel` | `nav2` | `[1.0, 0.0, 1.5]` / `[-1.0, 0.0, -1.5]` | 加减速；1.0 m/s² 时从 1 m/s 刹停约 0.5 m |
 | `behavior_server.max_rotational_vel` | `nav2` | `0.8` rad/s | 恢复行为（原地旋转）速度 |
-| `max_linear_velocity` | `urdf` | `3.0` m/s | Gazebo 底盘上限 |
+| `max_linear_velocity` | `urdf` | `2.78` m/s | Gazebo 底盘上限，等于实车最高速度 10 km/h |
 | `max_angular_velocity` | `urdf` | `0.8` rad/s | Gazebo 底盘上限，Nav2 的角速度不能超过它 |
 
 **同步规则**（`src/scout_mini_sim/test/test_odometry_config.py` 会自动检查）：
@@ -106,11 +106,11 @@
 | `inflation_layer.inflation_radius` | `1.0` m | `0.65` m | 膨胀半径；全局较大，让路径沿通道中间走 |
 | `inflation_layer.cost_scaling_factor` | `2.0` | `3.0` | 代价随距离衰减的速度；越小，离障碍物较远处的代价越高 |
 | `width` / `height` | 整张地图 | `8 × 8` m | 局部地图需覆盖 RPP 的追踪点和碰撞检查范围 |
-| `footprint` | `0.66 × 0.60` m | 同左 | 车身轮廓 |
+| `footprint` | `0.612 × 0.580` m | 同左 | 车身轮廓，按实车外形 |
 | `footprint_padding` | `0.02` m | 同左 | 车身外扩 |
 | `obstacle_max_range` / `raytrace_max_range` | `6.0` / `8.0` m | 同左 | 激光标记障碍 / 清除障碍的距离 |
 
-车身外接圆半径约 0.47 m。膨胀半径只比它大一点时，路径会紧贴障碍物。
+车身外接圆半径约 0.44 m（含 padding）。膨胀半径只比它大一点时，路径会紧贴障碍物。
 
 ---
 

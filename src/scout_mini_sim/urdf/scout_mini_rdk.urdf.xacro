@@ -336,7 +336,8 @@
       <odom_publish_frequency>50</odom_publish_frequency>
       <frame_id>odom</frame_id>
       <child_frame_id>base_footprint</child_frame_id>
-      <max_linear_velocity>3.0</max_linear_velocity>
+      <!-- real chassis top speed: 10 km/h -->
+      <max_linear_velocity>2.78</max_linear_velocity>
       <!-- keep equal to Nav2's max_vel_theta / velocity_smoother / behavior_server
            limits in scout_mini_navigation/config/nav2_params.yaml -->
       <max_angular_velocity>0.8</max_angular_velocity>

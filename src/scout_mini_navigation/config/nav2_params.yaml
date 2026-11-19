@@ -8,7 +8,7 @@
 #   2. velocity_smoother：max_velocity / max_accel / max_decel（最终发往 /cmd_vel）
 #   3. behavior_server：max_rotational_vel（原地旋转恢复行为）
 #   4. Gazebo DiffDrive 插件（scout_mini_sim/urdf/scout_mini_rdk.urdf.xacro）：
-#      max_linear_velocity=3.0 m/s，max_angular_velocity=0.8 rad/s
+#      max_linear_velocity=2.78 m/s（实车最高 10 km/h），max_angular_velocity=0.8 rad/s
 # Nav2 的角速度若高于 Gazebo 上限，命令会被底盘截断，车走不出控制器算出的弧线。
 amcl:
   ros__parameters:
@@ -207,7 +207,7 @@ local_costmap:
         plugin: nav2_costmap_2d::StaticLayer
         map_subscribe_transient_local: true
       always_send_full_costmap: true
-      footprint: '[[0.33, 0.30], [0.33, -0.30], [-0.33, -0.30], [-0.33, 0.30]]'
+      footprint: '[[0.306, 0.29], [0.306, -0.29], [-0.306, -0.29], [-0.306, 0.29]]'  # 实车 612 x 580 mm
       footprint_padding: 0.02
       obstacle_layer:
         plugin: nav2_costmap_2d::ObstacleLayer
@@ -261,12 +261,12 @@ global_costmap:
         plugin: nav2_costmap_2d::InflationLayer
         # 让全局路径沿通道中间走，转弯时离货架远一些，给局部控制器留出跟踪误差的余量。
         # Smac 2D 按 cost_travel_multiplier 把这些代价计入路径代价。
-        # 车身外接圆半径约 0.47 m；0.65 m 只多出 0.18 m，路径会紧贴货架端头绕过，
+        # 车身外接圆半径约 0.44 m（含 padding）；0.65 m 只多出约 0.2 m，路径会紧贴货架端头绕过，
         # 高速切弯时车身擦到货架卡住。衰减系数越小，离障碍物越远的格子代价越高。
         cost_scaling_factor: 2.0
         inflation_radius: 1.0
       always_send_full_costmap: true
-      footprint: '[[0.33, 0.30], [0.33, -0.30], [-0.33, -0.30], [-0.33, 0.30]]'
+      footprint: '[[0.306, 0.29], [0.306, -0.29], [-0.306, -0.29], [-0.306, 0.29]]'  # 实车 612 x 580 mm
       footprint_padding: 0.02
 map_server:
   ros__parameters:
