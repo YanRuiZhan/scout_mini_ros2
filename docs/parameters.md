@@ -210,6 +210,8 @@
 | 雷达 `update_rate` | `10` Hz | — |
 | IMU `update_rate` | `200` Hz | 必须能整除物理步长（`warehouse.sdf` 中为 2.5 ms） |
 | 彩色相机 | `1280×720`、`5` Hz | 巡检拍照够用；分辨率或帧率越高越占 CPU |
+| 相机高度 `camera_joint` 的 z | `0.219` m（离地约 `0.40` m） | 按实车实测；离地高度 = 0.181（`base_height`）+ z |
+| 雷达高度 `lidar_3d_joint` 的 z | `0.30` m（离地约 `0.48` m） | 改动后需同步 FAST-LIO 外参 `extrinsic_T` 和 `pcd_to_grid.py --sensor-height` |
 | 深度相机 | `1280×720`、`30` Hz | 仅 `depth_camera:=true` 时存在 |
 | `wheel_separation` | `0.90` m | 滑移转向的等效轮距（几何轮距 0.49 m），影响轮式里程计的航向 |
 
