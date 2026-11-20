@@ -50,6 +50,7 @@ import yaml
 # tour_planner.py 与本脚本在同一目录（源码目录或安装后的 lib/scout_mini_sim）
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import tour_planner  # noqa: E402
+import nav2_config  # noqa: E402  读取 nav2_params.yaml 里与离线规划相关的参数
 
 
 # CSV 日志的列，每个 POI 一行：
@@ -276,8 +277,11 @@ def load_plan(args):
       candidates  {设备 id: [候选视点, ...]}，按离线评分从高到低；
                   每个候选含 x / y / yaw / r / rank，index 为它在离线路程矩阵里的下标
       matrix      视点两两之间的离线路程 (m)
-    过期检查：给了 --map / --poi 时，比较文件 SHA-1 与生成规划时记录的是否一致，
-    不一致说明地图或设备改过，需要重新运行 plan_offline.py。
+    过期检查（任何一项不通过都拒绝运行，提示重新运行 plan_offline.py）：
+      - 给了 --map / --poi：比较文件 SHA-1 与生成规划时记录的是否一致，不一致说明地图或设备改过；
+      - Nav2 参数：比较 nav2_params.yaml 里车身尺寸、膨胀层、cost_travel_multiplier 这几个值
+        与生成规划时是否一致（--nav2-params 指定文件，默认自动查找；找不到时只警告、跳过）。
+        只比这几个值，调控制器速度等无关参数不会让离线规划失效。
     """
     with open(args.plan, encoding="utf-8") as stream:
         data = yaml.safe_load(stream)
@@ -298,6 +302,7 @@ def load_plan(args):
     for name, now, then in checks:
         if now != then:
             raise ValueError(f"{name}在生成离线规划之后改动过，请重新运行 plan_offline.py")
+    check_nav2_params(sources.get("nav2_params"), args)
 
     # ---- 设备与候选视点 ----
     viewpoints = data["viewpoints"]
@@ -313,6 +318,30 @@ def load_plan(args):
     if not pois:
         raise ValueError("没有可巡检的 POI")
     return pois, {"candidates": candidates, "matrix": data["matrix"]}
+
+
+def check_nav2_params(recorded, args):
+    """离线规划用到的 Nav2 参数有没有改过；改过抛 ValueError。
+
+    recorded 为规划文件里的 sources.nav2_params（含生成时读到的 values）；旧版规划文件没有它，跳过。
+    """
+    planned = (recorded or {}).get("values")
+    if not planned:
+        return
+    if args.nav2_params:
+        path = Path(args.nav2_params)
+        if not path.is_file():
+            raise ValueError(f"--nav2-params 文件不存在: {path}")
+    else:
+        path = nav2_config.default_nav2_params()
+        if path is None:
+            print("警告：找不到 nav2_params.yaml，跳过 Nav2 参数的过期检查", file=sys.stderr)
+            return
+    changed = nav2_config.compare_nav2_values(planned, nav2_config.read_nav2_params(path))
+    if changed:
+        detail = "；".join(f"{nav2_config.NAV2_LABELS.get(k, k)} {old:g} → {new}"
+                          for k, old, new in changed)
+        raise ValueError(f"Nav2 参数在生成离线规划之后改动过（{detail}），请重新运行 plan_offline.py")
 
 
 def write_log(path, rows):
@@ -840,6 +869,8 @@ def main(argv=None):
     parser.add_argument("--plan", help="plan_offline.py 生成的离线规划（候选视点 + 路程矩阵）；"
                                        "给出后不再使用 --dist / --poi-transform")
     parser.add_argument("--map", help="与 --plan 一起用：Nav2 的地图 YAML，用于检查离线规划是否过期")
+    parser.add_argument("--nav2-params", help="与 --plan 一起用：Nav2 参数文件，检查车身尺寸和代价参数是否改过；"
+                                              "默认自动找 scout_mini_navigation 的 config/nav2_params.yaml")
     parser.add_argument("--only", nargs="+", help="只巡检这些编号，如 PG-W01 AP-W03")
     parser.add_argument("--dist", type=float, nargs="+", default=[2.5, 3.0, 2.0],
                         help="观测距离候选 (m)，按顺序尝试；默认兼顾低位水平相机视野")

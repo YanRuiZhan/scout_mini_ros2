@@ -298,8 +298,19 @@ POI 文件里的 `z`（中心离地高度）和 `size: {w, h}` > `--world` 读�
 
 巡检时用 `--plan` 读取：每台设备按评分依次尝试候选视点（此刻规划不过去就换下一个），
 视点之间用离线路程，只在线计算"起点 → 各视点"这一行，启动时的规划从几十次 Nav2 调用减到十次左右。
-同时给 `--map` 时会核对地图的 SHA-1，地图或 POI 改过就拒绝运行并提示重新规划。
 CSV 的 `view_rank` 记录用的是第几候选。
+
+**过期检查**：离线规划依赖地图、设备和 Nav2 参数，其中任何一项在生成之后改过，巡检就拒绝运行，
+并提示重新运行 `plan_offline.py`：
+
+| 检查项 | 怎么比较 | 何时生效 |
+|---|---|---|
+| 地图 | 地图 YAML + 图片的 SHA-1 | 给了 `--map`（一键启动会自动传） |
+| POI 文件 | 文件 SHA-1 | 给了 `--poi` |
+| Nav2 参数 | 只比较车身内切 / 外接半径、膨胀半径、`cost_scaling_factor`、`cost_travel_multiplier` 这 5 个值 | 默认自动找 `nav2_params.yaml`，也可用 `--nav2-params` 指定；找不到时只警告 |
+
+Nav2 参数只比这 5 个值而不比整个文件，所以调控制器速度、到点容差等无关参数不会让离线规划失效。
+读取这些参数的代码在 `nav2_config.py`，离线规划和巡检共用同一份，保证两边算法一致。
 
 ```zsh
 ros2 run scout_mini_sim poi_patrol.py --plan maps/patrol_plan.yaml --map maps/warehouse.yaml
@@ -327,3 +338,16 @@ prime-run ros2 launch scout_mini_navigation sim_patrol.launch.py \
 其它参数：`patrol:=false` 只起仿真和导航，`patrol_args:="--only PG-W01 --order greedy"` 附加巡检参数，
 `gui:=false` 关闭 Gazebo 界面省资源，`shutdown_on_exit:=true` 巡检结束后一并退出。
 相对路径相对于运行命令时的当前目录，请在仓库根目录运行。
+
+使用离线规划的完整步骤（只有地图、设备或上表中的 Nav2 参数改过时才需要重做第 1 步）：
+
+```zsh
+# 1. 生成离线规划（不需要启动仿真）
+ros2 run scout_mini_sim plan_offline.py --poi maps/warehouse_poi.yaml --map maps/warehouse.yaml \
+  --pcd maps/warehouse.pcd --world src/scout_mini_sim/worlds/warehouse.sdf --out maps/patrol_plan.yaml
+# 2. 可选：不连 ROS 预览视点和访问顺序
+ros2 run scout_mini_sim poi_patrol.py --plan maps/patrol_plan.yaml --dry-run
+# 3. 一键启动；launch 会自动给巡检脚本传 --plan 和 --map，不需要额外参数
+prime-run ros2 launch scout_mini_navigation sim_patrol.launch.py \
+  map:=maps/warehouse.yaml plan:=maps/patrol_plan.yaml
+```

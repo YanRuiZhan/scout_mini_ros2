@@ -354,6 +354,36 @@ def test_plan_dry_run_staleness_and_filter(tmp_path, capsys):
     assert patrol.main(["--dry-run"]) == 1
 
 
+def test_plan_rejects_changed_nav2_params(tmp_path, capsys):
+    plan, map_yaml, _ = write_plan_files(tmp_path)
+    nav2 = tmp_path / "nav2.yaml"
+
+    def write_nav2(scaling, max_vel=1.0):
+        nav2.write_text(yaml.safe_dump({
+            "global_costmap": {"global_costmap": {"ros__parameters": {
+                "robot_radius": 0.4, "plugins": ["inflation_layer"],
+                "inflation_layer": {"plugin": "nav2_costmap_2d::InflationLayer",
+                                    "inflation_radius": 1.0, "cost_scaling_factor": scaling}}}},
+            "controller_server": {"ros__parameters": {"FollowPath": {"desired_linear_vel": max_vel}}},
+        }))
+    write_nav2(2.0)
+    data = yaml.safe_load(plan.read_text())
+    data["sources"]["nav2_params"] = {"values": patrol.nav2_config.read_nav2_params(nav2)}
+    plan.write_text(yaml.safe_dump(data))
+    args = ["--plan", str(plan), "--map", str(map_yaml), "--nav2-params", str(nav2), "--dry-run"]
+    assert patrol.main(args) == 0
+    # an unrelated parameter (controller speed) does not invalidate the plan
+    write_nav2(2.0, max_vel=0.5)
+    assert patrol.main(args) == 0
+    capsys.readouterr()
+    # a cost parameter the plan was computed with does
+    write_nav2(3.0)
+    assert patrol.main(args) == 1
+    err = capsys.readouterr().err
+    assert "cost_scaling_factor 2 → 3.0" in err and "plan_offline" in err
+    assert patrol.main(args[:-3] + ["--nav2-params", str(tmp_path / "nope.yaml"), "--dry-run"]) == 1
+
+
 def test_dry_run_reports_order_and_length(capsys):
     args = ["--poi", str(CONFIG), "--start-x", "0", "--start-y", "-22.5", "--dry-run"]
     assert patrol.main(args) == 0

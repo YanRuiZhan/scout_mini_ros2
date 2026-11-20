@@ -54,6 +54,8 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import poi_patrol  # noqa: E402  复用 POI 读取、校验和坐标转换
+from nav2_config import (  # noqa: E402  读取与 Nav2 一致的参数（巡检脚本做过期检查时也用它）
+    NAV2_FALLBACK, default_nav2_params, footprint_radii, read_nav2_params)
 import tour_planner  # noqa: E402  复用 PGM 读取和栅格 Dijkstra
 
 
@@ -187,74 +189,6 @@ def device_geometry(poi, from_world):
 # ============================================================================
 # 二、与 Nav2 保持一致的参数：从 nav2_params.yaml 自动读取
 # ============================================================================
-
-# 找不到 nav2_params.yaml 时才用这组内置值（与仓库当前配置相同）
-NAV2_FALLBACK = {"robot_radius": 0.44, "inscribed_radius": 0.31, "inflation_radius": 1.0,
-                 "cost_scaling": 2.0, "travel_multiplier": 2.0}
-
-
-def default_nav2_params():
-    """默认的 nav2_params.yaml：先找已安装的 scout_mini_navigation 包，再找源码目录；都没有返回 None。"""
-    try:
-        from ament_index_python.packages import get_package_share_directory
-        path = Path(get_package_share_directory("scout_mini_navigation")) / "config" / "nav2_params.yaml"
-        if path.is_file():
-            return path
-    except Exception:       # 没有 source ROS 环境、或包未安装
-        pass
-    # 源码目录：本脚本在 src/scout_mini_sim/scripts/，配置在 src/scout_mini_navigation/config/
-    path = Path(__file__).resolve().parents[2] / "scout_mini_navigation" / "config" / "nav2_params.yaml"
-    return path if path.is_file() else None
-
-
-def footprint_radii(points, padding=0.0):
-    """车身多边形 -> (内切半径, 外接半径)，都加上 footprint_padding。
-
-    内切半径 = 车体中心到各条边的最短距离（Nav2 以此判断"必然碰撞"）；
-    外接半径 = 中心到最远顶点的距离（车身原地转一圈扫过的范围）。
-    """
-    def to_edge(a, b):
-        ax, ay = a
-        bx, by = b
-        dx, dy = bx - ax, by - ay
-        t = max(0.0, min(1.0, -(ax * dx + ay * dy) / (dx * dx + dy * dy)))
-        return math.hypot(ax + t * dx, ay + t * dy)
-    edges = zip(points, points[1:] + points[:1])
-    inscribed = min(to_edge(a, b) for a, b in edges)
-    circumscribed = max(math.hypot(x, y) for x, y in points)
-    return inscribed + padding, circumscribed + padding
-
-
-def read_nav2_params(path):
-    """从 nav2_params.yaml 读出离线路程计算要与 Nav2 一致的参数。
-
-    global_costmap   footprint + footprint_padding  -> 内切 / 外接半径
-                     （没有 footprint 时用 robot_radius，内切 = 外接）
-                     膨胀层（plugins 里类型为 InflationLayer 的那个）-> inflation_radius、cost_scaling_factor
-    planner_server   第一个规划器插件的 cost_travel_multiplier（Smac 2D）
-    缺的项用 NAV2_FALLBACK 补上。
-    """
-    data = yaml.safe_load(Path(path).read_text())
-    gc = data["global_costmap"]["global_costmap"]["ros__parameters"]
-    out = dict(NAV2_FALLBACK)
-    footprint = gc.get("footprint")
-    if footprint and footprint != "[]":
-        points = yaml.safe_load(footprint) if isinstance(footprint, str) else footprint
-        out["inscribed_radius"], out["robot_radius"] = footprint_radii(
-            [tuple(map(float, xy)) for xy in points], float(gc.get("footprint_padding", 0.01)))
-    elif "robot_radius" in gc:
-        out["inscribed_radius"] = out["robot_radius"] = float(gc["robot_radius"])
-    for name in gc.get("plugins", []):
-        layer = gc.get(name)
-        if isinstance(layer, dict) and str(layer.get("plugin", "")).endswith("InflationLayer"):
-            out["inflation_radius"] = float(layer.get("inflation_radius", out["inflation_radius"]))
-            out["cost_scaling"] = float(layer.get("cost_scaling_factor", out["cost_scaling"]))
-    planner = data.get("planner_server", {}).get("ros__parameters", {})
-    plugin = (planner.get("planner_plugins") or ["GridBased"])[0]
-    out["travel_multiplier"] = float(planner.get(plugin, {}).get("cost_travel_multiplier",
-                                                                  out["travel_multiplier"]))
-    return out
-
 
 def resolve_nav2_params(p, log=print):
     """补全 p 里与 Nav2 相关、命令行没有给出的参数。
@@ -611,7 +545,9 @@ def make_plan(p, log=print):
         start_row = [lengths.get(c, math.inf) * gm.res if c is not None else math.inf for c in cells]
 
     sources = {"poi": {"path": str(p.poi), "sha1": file_sha1(p.poi)},
-               "nav2_params": ({"path": p.nav2_params, "sha1": file_sha1(p.nav2_params)}
+               # 记录 nav2_params.yaml 里读到的值；巡检时与当前文件比较，相关参数改过就提示重新规划
+               "nav2_params": ({"path": p.nav2_params, "sha1": file_sha1(p.nav2_params),
+                                "values": read_nav2_params(p.nav2_params)}
                                if p.nav2_params else None),
                "map": {"path": str(p.map), "sha1": file_sha1(*map_files(p.map))},
                "pcd": {"path": str(p.pcd), "sha1": file_sha1(p.pcd)} if p.pcd else None,

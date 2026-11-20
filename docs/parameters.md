@@ -233,6 +233,7 @@
 | `--poi` | — | POI 配置文件（在线生成视点）；与 `--plan` 同时给出时只用于过期检查 |
 | `--plan` | — | `plan_offline.py` 的离线规划；给出后不再使用 `--dist`、`--poi-transform` |
 | `--map` | — | 与 `--plan` 一起用：地图 YAML，检查离线规划是否过期 |
+| `--nav2-params` | 自动查找 | 与 `--plan` 一起用：检查车身尺寸、膨胀层、`cost_travel_multiplier` 是否在规划后改过 |
 | `--poi-transform TX TY YAW` | 无 | POI 坐标转到地图坐标；默认出生点建图时为 `22.5 0 -1.5708` |
 | `--dist` | `2.5 3.0 2.0` m | 观测距离候选，依次尝试直到规划成功 |
 | `--only` | 全部 | 只巡检指定编号 |

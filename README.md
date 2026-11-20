@@ -58,7 +58,7 @@ prime-run ros2 launch scout_mini_navigation navigation.launch.py map:=maps/wareh
 ros2 run scout_mini_sim poi_patrol.py --poi maps/warehouse_poi.yaml
 ```
 
-第 2～4 步也可以一条命令完成（参数和离线视点规划见
+第 2～4 步也可以一条命令完成（参数、离线视点规划 `plan_offline.py` 和 `plan:=` 用法见
 [仿真说明 · 一键启动](src/scout_mini_sim/README.md#一键启动仿真导航和巡检)）：
 
 ```zsh
