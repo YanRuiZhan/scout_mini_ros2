@@ -45,6 +45,41 @@ def test_greedy_detour_is_fixed_by_exact_and_two_opt():
     assert len(exact.legs) == len(wps) + 1         # includes the leg back to the start
 
 
+@pytest.mark.parametrize("method", ["exact", "two_opt"])
+@pytest.mark.parametrize("seed", range(5))
+def test_closed_tour_direction_is_fixed(seed, method):
+    # A closed tour has the same length both ways; the planner must always pick the
+    # direction that starts at the end nearer the start, whatever the input order.
+    rng = random.Random(seed)
+    start = (0.0, 0.0)
+    wps = [(rng.uniform(-20, 20), rng.uniform(-20, 20)) for _ in range(9)]
+    plan = tp.plan_tour(start, wps, method=method)
+    assert plan.legs[0] <= plan.legs[-1] + 1e-9
+    visited = [wps[k] for k in plan.order]
+    for shuffle_seed in range(3):
+        shuffled = wps[:]
+        random.Random(shuffle_seed).shuffle(shuffled)
+        again = tp.plan_tour(start, shuffled, method=method)
+        assert [shuffled[k] for k in again.order] == visited
+
+
+def test_orient_tour_prefers_shorter_direction_and_keeps_open_tours():
+    # asymmetric costs: 0 -> 1 -> 2 -> 0 costs 3, the reverse 0 -> 2 -> 1 -> 0 costs 30
+    D = [[0, 1, 10], [10, 0, 1], [1, 10, 0]]
+    assert tp.orient_tour([2, 1], D, return_home=True) == [1, 2]
+    assert tp.orient_tour([2, 1], D, return_home=False) == [2, 1]
+    # equal lengths and equal first legs: lower index first
+    S = [[0, 5, 5], [5, 0, 3], [5, 3, 0]]
+    assert tp.orient_tour([2, 1], S) == [1, 2]
+
+
+def test_greedy_baseline_is_not_reoriented():
+    # greedy goes to the nearest point first even if the far end would come first otherwise
+    start, wps = (0, 0), [(1, 0), (2, 0), (2, 5), (0, 5)]
+    plan = tp.plan_tour(start, wps, method="greedy")
+    assert plan.order[0] == 0
+
+
 def test_open_tour_has_no_return_leg():
     plan = tp.plan_tour((0, 0), [(1, 0), (2, 0)], method="exact", return_home=False)
     assert plan.order == [0, 1] and plan.legs == [1.0, 1.0] and plan.total == 2.0

@@ -24,6 +24,9 @@
 - ``exact``：Held-Karp 动态规划，精确最优，复杂度 O(n² · 2ⁿ)，适合约 13 个点以内；
 - ``auto``（默认）：点数不超过 ``exact_limit`` 用 exact，否则用 two_opt。
 
+回到起点的路线正反两个方向等长，exact / two_opt 统一取"先去离起点更近的一端"
+（见 ``orient_tour``），保证同一组点每次得到同一个顺序。
+
 命令行（离线分析，详见 --help）::
 
     python3 tour_planner.py --poi poi.yaml --map maps/warehouse.yaml --start 0 0 --method all
@@ -147,6 +150,31 @@ def solve_exact(D, nodes, return_home=True):
     return order[::-1]
 
 
+def orient_tour(order, D, return_home=True):
+    """固定闭合路线的走向，使同一组点每次得到同一个顺序。
+
+    回到起点的路线是一个环：正着走和反着走总长相同（距离对称时），求解器选哪个方向
+    取决于浮点误差和点的输入顺序。这里统一规则：
+      1. 反向明显更短（距离不对称时可能出现）就用反向；
+      2. 两个方向等长时，先去离起点更近的一端；
+      3. 仍然相同则先去下标较小的点。
+    开放路线（不回起点）的方向由起点决定，原样返回。
+    """
+    if not return_home or len(order) < 2:
+        return list(order)
+    fwd, rev = list(order), list(order)[::-1]
+    f_len, r_len = tour_length(fwd, D, True), tour_length(rev, D, True)
+    tol = 1e-6 * max(1.0, abs(f_len))
+    if r_len < f_len - tol:
+        return rev
+    if r_len > f_len + tol:
+        return fwd
+    f_first, r_first = D[0][fwd[0]], D[0][rev[0]]
+    if abs(f_first - r_first) > tol:
+        return fwd if f_first < r_first else rev
+    return fwd if fwd[0] < rev[0] else rev
+
+
 def plan_tour(start, waypoints, distance=euclidean, method="auto", return_home=True,
               exact_limit=DEFAULT_EXACT_LIMIT, symmetric=False, matrix=None):
     """规划访问顺序。
@@ -169,6 +197,8 @@ def plan_tour(start, waypoints, distance=euclidean, method="auto", return_home=T
         used = "exact" if len(nodes) <= exact_limit else "two_opt"
     solver = {"exact": solve_exact, "two_opt": solve_two_opt, "greedy": solve_greedy}[used]
     order = solver(D, nodes, return_home)
+    if used != "greedy":          # greedy 是"每步去最近点"的基线，保持其原意不翻转
+        order = orient_tour(order, D, return_home)
     legs = tour_legs(order, D, return_home)
     return TourPlan([k - 1 for k in order], legs, sum(legs), used, return_home, unreachable)
 

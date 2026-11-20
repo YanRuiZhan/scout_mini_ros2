@@ -233,6 +233,9 @@ ros2 run scout_mini_sim poi_patrol.py --poi /绝对路径/poi_in_map.yaml \
 | `--order greedy` | 贪心最近邻（旧版行为，用于对比） |
 | `--distance nav`（默认） / `euclidean` | 排序用 Nav2 路径长度 / 直线距离 |
 
+回到起点的路线正着走、反着走一样长，`exact` / `two_opt` 固定**先去离起点更近的一端**，
+同一组点每次得到同一个顺序（`greedy` 保持"每步去最近点"的原意，不做调整）。
+
 `--dry-run` 不连接 ROS，按直线距离给出顺序和各段长度。按地图上的实际路径长度离线比较各方法：
 
 ```zsh
