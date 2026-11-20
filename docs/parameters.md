@@ -262,14 +262,19 @@
 | `--r-min` / `--r-max` / `--r-step` | `1.5` / `4.0` / `0.25` m | 离检测面的距离范围和步长 |
 | `--r-limit` | `7.0` m | 整面入画需要退得比 `--r-max` 更远时，最多放宽到这里 |
 | `--phi-max` / `--phi-step` | `60` / `10` ° | 偏离法向的角度范围和步长 |
-| `--robot-radius` / `--clearance-margin` | `0.45` / `0.15` m | 停车位置离障碍物至少 半径 + 余量 |
+| `--robot-radius` / `--clearance-margin` | 自动（约 0.44）/ `0.15` m | 停车位置离障碍物至少 外接半径 + 余量 |
 | `--min-visibility` | `0.75` | 检测面最低可见比例 |
 | `--target-fill` | `0.35` | 理想的画面占比，成像大小评分以它为中心 |
 | `--keep` / `--min-separation` | `3` / `30` ° | 每台设备保留几个视点、偏角至少相差多少 |
 | `--search` | `astar` | 路程矩阵：每对视点一次代价感知 8 邻域 A*；`dijkstra` 结果相同、点多时更快 |
 | `--grid-step` | `2` | 路程计算的栅格降采样倍数，越大越快越粗 |
-| `--inscribed-radius` | `0.31` m | 路径搜索时障碍物的膨胀半径（车身内切半径，与 Smac 2D 一致） |
-| `--inflation-radius` / `--cost-scaling` / `--travel-multiplier` | `1.0` m / `2.0` / `2.0` | 与全局代价地图膨胀层、Smac 2D `cost_travel_multiplier` 保持一致；改了 `nav2_params.yaml` 要同步改这里 |
+| `--nav2-params` | 自动查找 | Nav2 参数文件；默认找 `scout_mini_navigation` 的 `config/nav2_params.yaml` |
+| `--inscribed-radius` | 自动（约 0.31） | 路径搜索时障碍物的膨胀半径（车身内切半径，与 Smac 2D 一致） |
+| `--inflation-radius` / `--cost-scaling` / `--travel-multiplier` | 自动（`1.0` m / `2.0` / `2.0`） | 全局代价地图膨胀层和 Smac 2D 的 `cost_travel_multiplier` |
+
+标"自动"的参数从 `nav2_params.yaml` 读取：车身内切 / 外接半径由 `footprint` + `footprint_padding` 算出，
+膨胀参数取全局代价地图的 InflationLayer，`cost_travel_multiplier` 取第一个规划器插件。
+改 `nav2_params.yaml` 后离线规划自动跟着变；命令行显式给出时以命令行为准。
 
 评分权重 `WEIGHTS`、相机参数 `CAMERA`、按类型的设备尺寸缺省值 `TYPE_DEFAULTS` 在脚本开头，直接修改。
 

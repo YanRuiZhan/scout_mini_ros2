@@ -286,7 +286,9 @@ ros2 run scout_mini_sim plan_offline.py \
 最后在栅格上用**代价感知的 8 邻域 A\***（`--search astar`）算所有入选视点两两之间的路程。
 代价模型按 Nav2 的公式重写：障碍物按车身内切半径 0.31 m 膨胀，膨胀层代价
 `252·exp(−cost_scaling_factor·(d − 内切半径))`，每一步代价 = 步长 × (1 + cost_travel_multiplier × 代价/252)，
-参数默认与 `nav2_params.yaml` 的全局代价地图和 Smac Planner 2D 相同，所以路径同样沿通道中线走。
+车身尺寸、膨胀半径、`cost_scaling_factor`、`cost_travel_multiplier` 运行时**自动从 `nav2_params.yaml` 读取**
+（启动时打印读到的值；`--nav2-params` 可指定其它文件，命令行给出的单项参数优先），
+改了 Nav2 配置不用手动同步，路径同样沿通道中线走。
 `--search dijkstra` 结果相同，点多时更快。
 
 设备检测面的高度和尺寸决定竖直视野约束（相机离地 0.40 m，竖直视场约 42.6°，

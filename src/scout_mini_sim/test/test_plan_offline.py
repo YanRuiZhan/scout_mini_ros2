@@ -48,6 +48,7 @@ BLOCKER = (2.6, 4.75, 3.0, 5.25)       # a box straight in front of the device
 
 def params(**over):
     p = po.build_parser().parse_args(["--poi", "x", "--map", "x"])
+    po.resolve_nav2_params(p, log=lambda *a: None)
     for k, v in over.items():
         setattr(p, k, v)
     return p
@@ -184,3 +185,45 @@ def test_unreachable_start_is_reported(tmp_path, capsys):
     assert po.main(["--poi", str(poi), "--map", str(map_yaml), "--start", "50", "50",
                     "--out", str(tmp_path / "p.yaml")]) == 1
     assert "起点" in capsys.readouterr().err
+
+
+NAV2_PARAMS = Path(__file__).resolve().parents[2] / "scout_mini_navigation/config/nav2_params.yaml"
+
+
+def test_footprint_radii():
+    rect = [(0.306, 0.29), (0.306, -0.29), (-0.306, -0.29), (-0.306, 0.29)]
+    inscribed, circumscribed = po.footprint_radii(rect, padding=0.02)
+    assert inscribed == pytest.approx(0.31)
+    assert circumscribed == pytest.approx(math.hypot(0.306, 0.29) + 0.02)
+
+
+@pytest.mark.skipif(not NAV2_PARAMS.is_file(), reason="scout_mini_navigation sources unavailable")
+def test_reads_repository_nav2_params():
+    values = po.read_nav2_params(NAV2_PARAMS)
+    assert values["inscribed_radius"] == pytest.approx(0.31)
+    assert values["robot_radius"] == pytest.approx(0.4416, abs=1e-3)
+    assert (values["inflation_radius"], values["cost_scaling"], values["travel_multiplier"]) == (1.0, 2.0, 2.0)
+
+
+def test_nav2_params_priority(tmp_path):
+    cfg = tmp_path / "nav2.yaml"
+    cfg.write_text(yaml.safe_dump({
+        "global_costmap": {"global_costmap": {"ros__parameters": {
+            "robot_radius": 0.5, "plugins": ["inflater"],
+            "inflater": {"plugin": "nav2_costmap_2d::InflationLayer",
+                         "inflation_radius": 1.5, "cost_scaling_factor": 4.0}}}},
+        "planner_server": {"ros__parameters": {"planner_plugins": ["P"],
+                                               "P": {"cost_travel_multiplier": 3.0}}},
+    }))
+    p = po.build_parser().parse_args(["--poi", "x", "--map", "x", "--nav2-params", str(cfg),
+                                      "--cost-scaling", "9"])
+    lines = []
+    po.resolve_nav2_params(p, log=lines.append)
+    # file values fill the gaps, the command line wins where given
+    assert (p.inscribed_radius, p.robot_radius, p.inflation_radius) == (0.5, 0.5, 1.5)
+    assert (p.cost_scaling, p.travel_multiplier) == (9.0, 3.0)
+    assert "命令行覆盖：cost_scaling" in lines[0]
+    missing = po.build_parser().parse_args(["--poi", "x", "--map", "x",
+                                            "--nav2-params", str(tmp_path / "nope.yaml")])
+    with pytest.raises(ValueError, match="不存在"):
+        po.resolve_nav2_params(missing, log=lambda *a: None)

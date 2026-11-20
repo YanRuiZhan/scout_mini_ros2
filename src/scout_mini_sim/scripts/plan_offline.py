@@ -30,6 +30,9 @@
    比几何最短路更接近 Nav2 实际规划出的长度。
 6. 写出 YAML，并记录 POI / 地图 / PCD 文件的 SHA-1；巡检时发现文件改过就会提示重新规划。
 
+车身尺寸、膨胀层和 Smac 2D 的代价参数默认从 nav2_params.yaml 自动读取（--nav2-params），
+与 Nav2 实际使用的保持一致；命令行显式给出时以命令行为准。
+
 用法（在仓库根目录）
 --------------------
     python3 src/scout_mini_sim/scripts/plan_offline.py \\
@@ -182,7 +185,105 @@ def device_geometry(poi, from_world):
 
 
 # ============================================================================
-# 二、地图：二维栅格（必需）与三维体素（可选）
+# 二、与 Nav2 保持一致的参数：从 nav2_params.yaml 自动读取
+# ============================================================================
+
+# 找不到 nav2_params.yaml 时才用这组内置值（与仓库当前配置相同）
+NAV2_FALLBACK = {"robot_radius": 0.44, "inscribed_radius": 0.31, "inflation_radius": 1.0,
+                 "cost_scaling": 2.0, "travel_multiplier": 2.0}
+
+
+def default_nav2_params():
+    """默认的 nav2_params.yaml：先找已安装的 scout_mini_navigation 包，再找源码目录；都没有返回 None。"""
+    try:
+        from ament_index_python.packages import get_package_share_directory
+        path = Path(get_package_share_directory("scout_mini_navigation")) / "config" / "nav2_params.yaml"
+        if path.is_file():
+            return path
+    except Exception:       # 没有 source ROS 环境、或包未安装
+        pass
+    # 源码目录：本脚本在 src/scout_mini_sim/scripts/，配置在 src/scout_mini_navigation/config/
+    path = Path(__file__).resolve().parents[2] / "scout_mini_navigation" / "config" / "nav2_params.yaml"
+    return path if path.is_file() else None
+
+
+def footprint_radii(points, padding=0.0):
+    """车身多边形 -> (内切半径, 外接半径)，都加上 footprint_padding。
+
+    内切半径 = 车体中心到各条边的最短距离（Nav2 以此判断"必然碰撞"）；
+    外接半径 = 中心到最远顶点的距离（车身原地转一圈扫过的范围）。
+    """
+    def to_edge(a, b):
+        ax, ay = a
+        bx, by = b
+        dx, dy = bx - ax, by - ay
+        t = max(0.0, min(1.0, -(ax * dx + ay * dy) / (dx * dx + dy * dy)))
+        return math.hypot(ax + t * dx, ay + t * dy)
+    edges = zip(points, points[1:] + points[:1])
+    inscribed = min(to_edge(a, b) for a, b in edges)
+    circumscribed = max(math.hypot(x, y) for x, y in points)
+    return inscribed + padding, circumscribed + padding
+
+
+def read_nav2_params(path):
+    """从 nav2_params.yaml 读出离线路程计算要与 Nav2 一致的参数。
+
+    global_costmap   footprint + footprint_padding  -> 内切 / 外接半径
+                     （没有 footprint 时用 robot_radius，内切 = 外接）
+                     膨胀层（plugins 里类型为 InflationLayer 的那个）-> inflation_radius、cost_scaling_factor
+    planner_server   第一个规划器插件的 cost_travel_multiplier（Smac 2D）
+    缺的项用 NAV2_FALLBACK 补上。
+    """
+    data = yaml.safe_load(Path(path).read_text())
+    gc = data["global_costmap"]["global_costmap"]["ros__parameters"]
+    out = dict(NAV2_FALLBACK)
+    footprint = gc.get("footprint")
+    if footprint and footprint != "[]":
+        points = yaml.safe_load(footprint) if isinstance(footprint, str) else footprint
+        out["inscribed_radius"], out["robot_radius"] = footprint_radii(
+            [tuple(map(float, xy)) for xy in points], float(gc.get("footprint_padding", 0.01)))
+    elif "robot_radius" in gc:
+        out["inscribed_radius"] = out["robot_radius"] = float(gc["robot_radius"])
+    for name in gc.get("plugins", []):
+        layer = gc.get(name)
+        if isinstance(layer, dict) and str(layer.get("plugin", "")).endswith("InflationLayer"):
+            out["inflation_radius"] = float(layer.get("inflation_radius", out["inflation_radius"]))
+            out["cost_scaling"] = float(layer.get("cost_scaling_factor", out["cost_scaling"]))
+    planner = data.get("planner_server", {}).get("ros__parameters", {})
+    plugin = (planner.get("planner_plugins") or ["GridBased"])[0]
+    out["travel_multiplier"] = float(planner.get(plugin, {}).get("cost_travel_multiplier",
+                                                                  out["travel_multiplier"]))
+    return out
+
+
+def resolve_nav2_params(p, log=print):
+    """补全 p 里与 Nav2 相关、命令行没有给出的参数。
+
+    优先级：命令行显式给出 > nav2_params.yaml（--nav2-params，默认自动查找）> NAV2_FALLBACK。
+    这样改了 nav2_params.yaml 后，离线规划自动跟着变，不用手动同步。
+    """
+    if p.nav2_params:
+        path = Path(p.nav2_params)
+        if not path.is_file():
+            raise ValueError(f"--nav2-params 文件不存在: {path}")
+    else:
+        path = default_nav2_params()
+    values = read_nav2_params(path) if path else dict(NAV2_FALLBACK)
+    from_cli = [k for k in NAV2_FALLBACK if getattr(p, k) is not None]
+    for key, value in values.items():
+        if getattr(p, key) is None:
+            setattr(p, key, value)
+    p.nav2_params = str(path) if path else None
+    log(f"Nav2 参数：{path or '未找到 nav2_params.yaml，用内置默认值'}\n"
+        f"  车身内切 {p.inscribed_radius:.3f} m / 外接 {p.robot_radius:.3f} m，"
+        f"膨胀半径 {p.inflation_radius:g} m，cost_scaling_factor {p.cost_scaling:g}，"
+        f"cost_travel_multiplier {p.travel_multiplier:g}"
+        + (f"（命令行覆盖：{', '.join(from_cli)}）" if from_cli else ""))
+    return p
+
+
+# ============================================================================
+# 三、地图：二维栅格（必需）与三维体素（可选）
 # ============================================================================
 
 class Grid:
@@ -274,7 +375,7 @@ class Voxels:
 
 
 # ============================================================================
-# 三、候选视点：采样、约束检查、评分、挑选
+# 四、候选视点：采样、约束检查、评分、挑选
 # ============================================================================
 
 def face_points(poi, geo, n=3):
@@ -429,7 +530,7 @@ def plan_device(poi, geo, grid, voxels, reach, p):
 
 
 # ============================================================================
-# 四、主流程
+# 五、主流程
 # ============================================================================
 
 def make_plan(p, log=print):
@@ -510,11 +611,13 @@ def make_plan(p, log=print):
         start_row = [lengths.get(c, math.inf) * gm.res if c is not None else math.inf for c in cells]
 
     sources = {"poi": {"path": str(p.poi), "sha1": file_sha1(p.poi)},
+               "nav2_params": ({"path": p.nav2_params, "sha1": file_sha1(p.nav2_params)}
+                               if p.nav2_params else None),
                "map": {"path": str(p.map), "sha1": file_sha1(*map_files(p.map))},
                "pcd": {"path": str(p.pcd), "sha1": file_sha1(p.pcd)} if p.pcd else None,
                "world": str(p.world) if p.world else None}
     params = {k: v for k, v in vars(p).items()
-              if k not in ("poi", "map", "pcd", "world", "out", "only")}
+              if k not in ("poi", "map", "pcd", "world", "out", "only", "nav2_params")}
     params.update(camera=CAMERA, weights=WEIGHTS)
     return {
         "version": 1,
@@ -556,7 +659,8 @@ def build_parser():
     ap.add_argument("--phi-max", type=float, default=60.0, help="偏离法向的最大角度 (°)")
     ap.add_argument("--phi-step", type=float, default=10.0)
     # --- 约束与评分 ---
-    ap.add_argument("--robot-radius", type=float, default=0.45, help="车身外接圆半径 (m)")
+    ap.add_argument("--robot-radius", type=float,
+                    help="车身外接圆半径 (m)；默认由 nav2_params.yaml 的 footprint 算出（约 0.44）")
     ap.add_argument("--clearance-margin", type=float, default=0.15, help="在车身半径之外再留的余量 (m)")
     ap.add_argument("--fov-margin", type=float, default=0.05, help="视野边缘留出的角度 (rad)")
     ap.add_argument("--min-visibility", type=float, default=0.75, help="检测面最低可见比例")
@@ -571,17 +675,21 @@ def build_parser():
     ap.add_argument("--search", default="astar", choices=("astar", "dijkstra"),
                     help="astar：每对视点一次 8 邻域 A*；dijkstra：每个视点一次一对全部，点多时更快，结果相同")
     ap.add_argument("--grid-step", type=int, default=2, help="路程计算时栅格降采样倍数（越大越快越粗）")
-    ap.add_argument("--inscribed-radius", type=float, default=0.31,
-                    help="车身内切半径 (m)，路径搜索按它膨胀障碍物（车宽 0.58 m 的一半 + padding 0.02）")
-    ap.add_argument("--inflation-radius", type=float, default=1.0, help="全局代价地图膨胀半径 (m)")
-    ap.add_argument("--cost-scaling", type=float, default=2.0, help="膨胀层 cost_scaling_factor")
-    ap.add_argument("--travel-multiplier", type=float, default=2.0, help="Smac 2D cost_travel_multiplier")
+    # 下面四项默认从 nav2_params.yaml 读取（见 resolve_nav2_params），命令行给出时以命令行为准
+    ap.add_argument("--nav2-params",
+                    help="Nav2 参数文件；默认自动找 scout_mini_navigation 的 config/nav2_params.yaml")
+    ap.add_argument("--inscribed-radius", type=float,
+                    help="车身内切半径 (m)，路径搜索按它膨胀障碍物；默认由 footprint 算出（约 0.31）")
+    ap.add_argument("--inflation-radius", type=float, help="全局代价地图膨胀半径 (m)")
+    ap.add_argument("--cost-scaling", type=float, help="膨胀层 cost_scaling_factor")
+    ap.add_argument("--travel-multiplier", type=float, help="Smac 2D cost_travel_multiplier")
     return ap
 
 
 def main(argv=None):
     p = build_parser().parse_args(argv)
     try:
+        resolve_nav2_params(p)
         positive = [p.r_min, p.r_max, p.r_limit, p.r_step, p.phi_step, p.robot_radius, p.voxel,
                     p.target_fill, p.inscribed_radius, p.inflation_radius, p.cost_scaling]
         if any(not math.isfinite(v) or v <= 0 for v in positive) or not p.r_min <= p.r_max <= p.r_limit:
@@ -592,7 +700,7 @@ def main(argv=None):
         if p.keep < 1 or p.grid_step < 1 or not 0 <= p.min_visibility <= 1:
             raise ValueError("--keep、--grid-step 至少为 1，--min-visibility 在 0~1 之间")
         plan = make_plan(p)
-    except (OSError, ValueError, KeyError) as error:
+    except (OSError, ValueError, KeyError, TypeError, yaml.YAMLError) as error:
         print(f"离线规划错误: {error}", file=sys.stderr)
         return 1
     Path(p.out).parent.mkdir(parents=True, exist_ok=True)
