@@ -236,6 +236,12 @@ ros2 run scout_mini_sim poi_patrol.py --poi /绝对路径/poi_in_map.yaml \
 回到起点的路线正着走、反着走一样长，`exact` / `two_opt` 固定**先去离起点更近的一端**，
 同一组点每次得到同一个顺序（`greedy` 保持"每步去最近点"的原意，不做调整）。
 
+**近点兜底**：Humble 的 RPP 离路径终点不到 0.25 m 就停下只调朝向，而到点判定要求离真实目标
+不到 0.25 m；两者差几厘米时小车会停在视点旁不动，Nav2 随后报 `Failed to make progress` 并原地
+转圈恢复。脚本发现小车在视点 `--near-radius`（默认 0.4 m）内停留超过 `--stuck-time`（默认 8 s）
+时，取消 Nav2 任务，用 Nav2 的 Spin 行为把车头转到目标朝向（误差在 `--align-tolerance` 内就不转），
+然后照常拍照，结果记为 `reached_near`。`--near-radius 0` 关闭。
+
 `--dry-run` 不连接 ROS，按直线距离给出顺序和各段长度。按地图上的实际路径长度离线比较各方法：
 
 ```zsh
@@ -244,8 +250,9 @@ ros2 run scout_mini_sim poi_patrol.py --poi /绝对路径/poi_in_map.yaml \
 ```
 
 每次巡检在 `patrol_out/日期_时间_随机后缀/` 下保存 PNG 和 `patrol_log.csv`，
-每完成一个点就写入 CSV。`result` 区分 `reached`、`no_plan`、`rejected`、
-`timeout`、`canceled`、`failed` 等状态；`image_result` 单独记录 `saved`、
+每完成一个点就写入 CSV。`result` 区分 `reached`、`reached_near`、`no_plan`、`rejected`、
+`timeout`、`canceled`、`failed` 等状态；`pos_err_m` / `yaw_err_deg` 是到点后的位置和朝向误差；
+`image_result` 单独记录 `saved`、
 `no_image` 或 `error`。到点后默认等待 0.5 秒，随后只接收采集时间更新的图像。
 Ctrl+C 时保留当前记录、请求取消导航并向 `/cmd_vel` 发布零速度。
 本轮适配的自动测试没有验证 Gazebo 中整条路线的可达性，首次请用 `--only` 单点验证。

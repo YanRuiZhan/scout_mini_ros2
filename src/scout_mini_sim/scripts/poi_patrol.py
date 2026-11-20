@@ -10,6 +10,9 @@
    求访问顺序（默认精确最优，--order 可选 greedy / two_opt）。
 5. 依次：导航 → 到点稳定 → 拍一张新图像 → 写一行 CSV；某个点失败时，
    以当前位置为起点对剩余的点重新排序。
+   近点兜底：小车已到视点附近（--near-radius）却停着不动超过 --stuck-time，
+   说明 Nav2 卡在到点判定的边界上；这时取消 Nav2 任务，用 Spin 原地对准朝向后照常拍照，
+   结果记为 reached_near（原理见 NearGoalMonitor）。
 6. 全部巡检完后导航回出发时的位姿（--no-return-home 可关闭），也记一行 CSV。
 7. 结束或 Ctrl+C 时取消导航目标，并向 /cmd_vel 发零速度停车。
 
@@ -22,7 +25,7 @@
 代码结构
 --------
 - 纯 Python 部分（不依赖 ROS，可单独测试 / dry-run）：
-  load_pois、view_pose、order_nearest、prepare_pois、write_log
+  load_pois、view_pose、angle_diff、NearGoalMonitor、order_pois、prepare_pois、write_log
 - 访问顺序：tour_planner.py（同目录的独立模块，也可单独运行做离线分析）
 - ROS 部分（ROS 相关模块在函数内部才导入，dry-run 时不需要 ROS 环境）：
   wait_for_navigation、run
@@ -47,17 +50,22 @@ import tour_planner  # noqa: E402
 
 # CSV 日志的列，每个 POI 一行：
 #   order        巡检顺序（从 1 开始）；最后一行 id=HOME 为返回起点
-#   result       导航结果：reached / no_plan / rejected / timeout / canceled / failed / interrupted
+#   result       导航结果：reached / reached_near / no_plan / rejected / timeout / canceled /
+#                failed / interrupted。reached_near = 近点卡住后由本脚本对准朝向（见 NearGoalMonitor）
 #   view_dist    实际采用的观测距离 (m)
 #   plan_m       出发前规划的这一段路程 (m)，按 Nav2 路径长度（或 --distance 指定的方式）
 #   goal_*       发给 Nav2 的目标位姿；robot_* 为到达后从 TF 读到的实际位置
 #   pos_err_m    实际位置与目标位置的距离 (m)
+#   yaw_err_deg  实际朝向减目标朝向 (°)，正数 = 车头偏左（逆时针）
 #   time_s       导航耗时（墙钟时间，s）
 #   image        保存的图片文件名；image_result 为 saved / no_image / error
 LOG_FIELDS = [
     "order", "id", "type", "result", "view_dist", "plan_m", "goal_x", "goal_y", "goal_yaw",
-    "robot_x", "robot_y", "pos_err_m", "time_s", "image", "image_result",
+    "robot_x", "robot_y", "pos_err_m", "yaw_err_deg", "time_s", "image", "image_result",
 ]
+
+# 视为"到达"、会拍照的结果
+REACHED = ("reached", "reached_near")
 
 # lifecycle_msgs/State 中 PRIMARY_STATE_ACTIVE 的取值：节点已激活，可以接收任务。
 LIFECYCLE_ACTIVE = 3
@@ -133,6 +141,50 @@ def view_pose(poi, dist):
 def yaw_from_quaternion(q):
     """四元数 -> 绕 Z 轴的航向角 (rad)。"""
     return math.atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+
+
+def angle_diff(a, b):
+    """角度差 a - b，归一化到 [-pi, pi)。例如 angle_diff(170°, -170°) = -20°，而不是 340°。"""
+    return (a - b + math.pi) % (2 * math.pi) - math.pi
+
+
+class NearGoalMonitor:
+    """判断机器人是否"已经到了视点附近，却停在那里不动"（近点卡住）。
+
+    为什么需要它
+    ------------
+    Humble 的 RPP 控制器在离"路径终点"不到 xy_goal_tolerance 时就停止前进、原地调朝向；
+    而到点判定要求离"真实目标"不到同一个 xy_goal_tolerance。路径终点落在栅格中心上，
+    和真实目标差几厘米，于是可能出现：RPP 认为到了，到点判定认为没到，小车原地不动，
+    10 多秒后 Nav2 报 "Failed to make progress"，行为树开始原地转圈恢复。
+    这个类发现这种情况后，由 navigate() 取消 Nav2 任务、自己把车头转正再拍照。
+
+    判定规则
+    --------
+    - 离目标超过 radius：不算近点，计时清零；
+    - 在 radius 以内：以当前位置为锚点开始计时；只要离锚点移动超过 move_tol 就重新计时
+      （说明 Nav2 还在正常往里开）；
+    - 在锚点附近连续停留 stuck_time 秒：判定为近点卡住，update() 返回 True。
+    radius <= 0 表示关闭此功能，update() 永远返回 False。
+    """
+
+    def __init__(self, goal_xy, radius, stuck_time, move_tol=0.1):
+        self.goal = tuple(goal_xy)
+        self.radius = radius
+        self.stuck_time = stuck_time
+        self.move_tol = move_tol
+        self.anchor = None      # 进入近点范围后的参考位置
+        self.since = None       # 在参考位置附近开始停留的时刻
+
+    def update(self, xy, now):
+        """输入当前位置 (x, y) 和当前时间 now (s)，返回是否已判定为近点卡住。"""
+        if self.radius <= 0 or math.dist(xy, self.goal) > self.radius:
+            self.anchor = None
+            return False
+        if self.anchor is None or math.dist(xy, self.anchor) > self.move_tol:
+            self.anchor, self.since = tuple(xy), now
+            return False
+        return now - self.since >= self.stuck_time
 
 
 def order_pois(pois, start_xy, dist, method="auto", return_home=True):
@@ -365,11 +417,64 @@ def run(args, pois):
                     return candidate
             return None
 
+        def robot_pose():
+            """当前机器人位姿 (x, y, yaw)，取自 TF（--frame -> --base-frame）；没有 TF 时返回 None。"""
+            try:
+                t = buffer.lookup_transform(args.frame, args.base_frame, Time())
+            except TransformException:
+                return None
+            return (t.transform.translation.x, t.transform.translation.y,
+                    yaw_from_quaternion(t.transform.rotation))
+
+        def wait_task():
+            """阻塞等待当前 Nav2 任务（导航或 Spin）结束，返回 TaskResult。
+
+            isTaskComplete() 内部会 spin 节点，所以循环期间回调照常执行。
+            """
+            nonlocal task_active
+            while not nav.isTaskComplete():
+                pass
+            task_active = False
+            return nav.getResult()
+
+        def align_heading(goal_yaw):
+            """近点兜底的第二步：用 Nav2 behavior_server 的 Spin 行为原地转到目标朝向。
+
+            朝向误差不超过 --align-tolerance 时不转。返回 True 表示朝向已对准。
+            Spin 自带碰撞检查，转动中会避开局部代价地图里的障碍物。
+            """
+            nonlocal task_active
+            pose = robot_pose()
+            if pose is None:
+                nav.get_logger().warning("近点兜底：没有定位 TF，无法对准朝向")
+                return False
+            error = angle_diff(goal_yaw, pose[2])        # 正数 = 需要逆时针转
+            if abs(error) <= args.align_tolerance:
+                return True
+            nav.get_logger().info(f"近点兜底：原地转 {math.degrees(error):.1f}° 对准设备")
+            nav.feedback = None
+            task_active = True
+            # time_allowance 为整数秒：按 0.4 rad/s 的低速估算，再留 5 s 余量
+            if not nav.spin(spin_dist=error, time_allowance=int(math.ceil(abs(error) / 0.4)) + 5):
+                task_active = False
+                return False
+            return wait_task() == TaskResult.SUCCEEDED
+
         def navigate(goal, row):
-            """发送导航目标并阻塞等待结果，把结果和耗时写入 row。"""
+            """发送导航目标并阻塞等待结果，把结果和耗时写入 row。
+
+            row["result"] 的取值：
+              reached       Nav2 正常到达
+              reached_near  近点卡住，已由本脚本取消 Nav2 并用 Spin 对准朝向（照常拍照）
+              timeout       超过 --timeout，已取消
+              rejected / canceled / failed / unknown  Nav2 返回的其它结果
+            """
             nonlocal motion_started, task_active
             started = time.monotonic()
             motion_started = True
+            goal_xy = (goal.pose.position.x, goal.pose.position.y)
+            goal_yaw = yaw_from_quaternion(goal.pose.orientation)
+            monitor = NearGoalMonitor(goal_xy, args.near_radius, args.stuck_time)
             # Commander 的 getPath 和 goToPose 共用 result_future / feedback，先清掉上一次的状态。
             nav.feedback = None
             task_active = True
@@ -377,29 +482,48 @@ def run(args, pois):
                 task_active = False
                 row["result"] = "rejected"
                 return
-            # isTaskComplete() 内部会 spin，所以这个循环不会卡死回调。
-            timed_out = False
+            # 等待导航结束；期间检查两件事，每件只触发一次：
+            #   1) 墙钟超时 -> 取消任务，结果记为 timeout；
+            #   2) 近点卡住（见 NearGoalMonitor）-> 取消任务，稍后自己对准朝向。
+            timed_out = near_stuck = False
             while not nav.isTaskComplete():
-                if not timed_out and time.monotonic() - started > args.timeout:
+                now = time.monotonic()
+                if timed_out or near_stuck:
+                    continue                      # 已发过取消，只等任务真正结束
+                if now - started > args.timeout:
                     timed_out = True
-                    nav.cancelTask()  # 只取消一次，然后继续等它真正结束
+                    nav.cancelTask()
+                    continue
+                pose = robot_pose()
+                if pose is not None and monitor.update(pose[:2], now):
+                    near_stuck = True
+                    nav.get_logger().warning(
+                        f"已在视点 {args.near_radius} m 内停留 {args.stuck_time:.0f} s，"
+                        "取消 Nav2 任务，改为原地对准朝向")
+                    nav.cancelTask()
             task_active = False
             result = nav.getResult()
+
+            if near_stuck and result != TaskResult.SUCCEEDED:
+                # 近点兜底：位置已经足够近，只差朝向；转正后按到达处理
+                row["result"] = "reached_near" if align_heading(goal_yaw) else "failed"
+            else:
+                row["result"] = "timeout" if timed_out else {
+                    TaskResult.SUCCEEDED: "reached", TaskResult.CANCELED: "canceled",
+                    TaskResult.FAILED: "failed",
+                }.get(result, "unknown")
             row["time_s"] = round(time.monotonic() - started, 2)
-            row["result"] = "timeout" if timed_out else {
-                TaskResult.SUCCEEDED: "reached", TaskResult.CANCELED: "canceled",
-                TaskResult.FAILED: "failed",
-            }.get(result, "unknown")
 
         def record_position(poi, row):
-            """读取到达后的实际位置，计算与目标点的偏差。"""
-            try:
-                actual = buffer.lookup_transform(args.frame, args.base_frame, Time())
-                rx, ry = actual.transform.translation.x, actual.transform.translation.y
-                row.update(robot_x=rx, robot_y=ry,
-                           pos_err_m=math.hypot(rx - row["goal_x"], ry - row["goal_y"]))
-            except TransformException:
+            """读取到达后的实际位姿，计算与目标的位置偏差 (m) 和朝向偏差 (°)。"""
+            pose = robot_pose()
+            if pose is None:
                 nav.get_logger().warning(f"{poi['id']}: 无最终定位 TF，未记录位置误差")
+                return
+            rx, ry, ryaw = pose
+            row.update(robot_x=rx, robot_y=ry,
+                       pos_err_m=math.hypot(rx - row["goal_x"], ry - row["goal_y"]),
+                       yaw_err_deg=round(math.degrees(angle_diff(ryaw, row["goal_yaw"])), 1))
 
         def capture_image(index, poi, row):
             """到点后等待车身稳定，再拍一张"新"图像保存为 PNG。"""
@@ -525,14 +649,14 @@ def run(args, pois):
                 navigate(goals[poi["id"]], row)
                 if row["result"] != "rejected":
                     record_position(poi, row)
-                if row["result"] == "reached":
+                if row["result"] in REACHED:
                     capture_image(index, poi, row)
                 elif queue:
-                    try:
-                        now = buffer.lookup_transform(args.frame, args.base_frame, Time())
-                        replan((now.transform.translation.x, now.transform.translation.y,
-                                yaw_from_quaternion(now.transform.rotation)))
-                    except TransformException:
+                    # 没到达：以当前位置为起点，对剩余的点重新排序
+                    pose = robot_pose()
+                    if pose is not None:
+                        replan(pose)
+                    else:
                         nav.get_logger().warning("无定位 TF，按原顺序继续")
             except KeyboardInterrupt:
                 row["result"] = "interrupted"
@@ -543,7 +667,7 @@ def run(args, pois):
         # ------------------------------------------------------------------
         # 返回起点：所有 POI 结束后（无论成败）回到出发时的位置和朝向
         # ------------------------------------------------------------------
-        reached = sum(row["result"] == "reached" for row in rows)
+        reached = sum(row["result"] in REACHED for row in rows)
         if args.return_home:
             row = dict.fromkeys(LOG_FIELDS, "")
             row.update(order=index + 1, id="HOME", type="return_home", result="error",
@@ -557,7 +681,7 @@ def run(args, pois):
                 navigate(make_pose(*home), row)
                 if row["result"] != "rejected":
                     record_position({"id": "HOME"}, row)
-                if row["result"] != "reached":
+                if row["result"] not in REACHED:
                     nav.get_logger().warning(f"未能返回起点：{row['result']}")
             except KeyboardInterrupt:
                 row["result"] = "interrupted"
@@ -621,6 +745,13 @@ def main(argv=None):
     parser.add_argument("--startup-timeout", type=float, default=60.0, help="启动准备墙钟超时 (s)")
     parser.add_argument("--image-timeout", type=float, default=3.0, help="到点后等待新图像的时间 (s)")
     parser.add_argument("--settle-time", type=float, default=0.5, help="到点后拍照前的静置时间 (s)")
+    # --- 近点兜底（见 NearGoalMonitor）---
+    parser.add_argument("--near-radius", type=float, default=0.4,
+                        help="离视点多近时启用近点兜底 (m)；0 关闭")
+    parser.add_argument("--stuck-time", type=float, default=8.0,
+                        help="在视点附近基本不动多久判定为卡住 (s)；应小于 Nav2 进度检查的 15 s")
+    parser.add_argument("--align-tolerance", type=float, default=0.1,
+                        help="兜底时朝向误差小于它就不再转 (rad)，0.1 rad 约 5.7°")
     # --- 输出 ---
     parser.add_argument("--out", default="patrol_out", help="输出根目录，每次任务建立独立子目录")
     parser.add_argument("--order", default="auto", choices=tour_planner.METHODS,
@@ -634,11 +765,12 @@ def main(argv=None):
 
     try:
         # ---- 参数检查：尽早报错，不要等到连上 ROS 之后 ----
-        positive = args.dist + [args.timeout, args.startup_timeout, args.image_timeout]
+        positive = args.dist + [args.timeout, args.startup_timeout, args.image_timeout,
+                                args.stuck_time, args.align_tolerance]
         if any(not math.isfinite(value) or value <= 0 for value in positive):
-            raise ValueError("距离和各项超时必须为有限正数")
-        if not math.isfinite(args.settle_time) or args.settle_time < 0:
-            raise ValueError("--settle-time 必须为有限非负数")
+            raise ValueError("距离、各项超时、--stuck-time 和 --align-tolerance 必须为有限正数")
+        if any(not math.isfinite(value) or value < 0 for value in (args.settle_time, args.near_radius)):
+            raise ValueError("--settle-time 和 --near-radius 必须为有限非负数")
         if (args.start_x is None) != (args.start_y is None):
             raise ValueError("--start-x 和 --start-y 必须一同提供")
         coordinates = ([] if args.start_x is None else [args.start_x, args.start_y])

@@ -80,8 +80,15 @@
 | `xy_goal_tolerance` | `0.25` m | 位置误差小于它算到达 |
 | `yaw_goal_tolerance` | `0.25` rad（约 14°） | 朝向误差小于它算到达；巡检拍照对朝向敏感时可调小 |
 
-卡住判定：`controller_server.progress_checker`：`movement_time_allowance: 10.0` s 内移动不足
-`required_movement_radius: 0.2` m 即判定卡住，交给行为树恢复。
+卡住判定：`controller_server.progress_checker`：`movement_time_allowance: 15.0` s 内平移不足
+`required_movement_radius: 0.2` m 即判定卡住，交给行为树恢复（原地转向不算移动）。
+
+控制频率：`controller_server.controller_frequency: 10.0` Hz。仿真负载高时 20 Hz 实际只能跑到
+5～10 Hz（日志 `Control loop missed its desired rate`），按实际能达到的频率设置。
+
+注意：Humble 的 RPP 直接用 `xy_goal_tolerance` 作为"开始原地调朝向"的距离，两者无法分开设置。
+路径终点与真实目标差几厘米时，小车可能停在视点旁不动；`poi_patrol.py` 的近点兜底处理这种情况
+（见第 10 节 `--near-radius`）。
 
 ---
 
@@ -230,6 +237,9 @@
 | `--timeout` | `300` s | 单个目标的导航超时 |
 | `--settle-time` | `0.5` s | 到点后拍照前的静置时间 |
 | `--image-timeout` | `3.0` s | 等待新图像的时间 |
+| `--near-radius` | `0.4` m | 近点兜底：离视点多近时启用；`0` 关闭 |
+| `--stuck-time` | `8.0` s | 近点兜底：在视点附近基本不动多久判定为卡住（应小于进度检查的 15 s） |
+| `--align-tolerance` | `0.1` rad | 近点兜底：朝向误差小于它就不再用 Spin 转 |
 | `--order` | `auto` | 访问顺序：`auto`（≤ 13 点用 `exact`，否则 `two_opt`）、`exact`（精确最优）、`two_opt`、`greedy` |
 | `--distance` | `nav` | 排序用的距离：`nav`（Nav2 规划路径长度）或 `euclidean`（直线） |
 | `--return-home` | 开启 | 巡检结束后回到出发时的位姿；`--no-return-home` 关闭 |

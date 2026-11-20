@@ -97,10 +97,32 @@ def test_empty_config_is_rejected_before_ros(tmp_path, capsys):
     assert "没有可巡检" in capsys.readouterr().err
 
 
+def test_angle_diff_wraps_to_shortest_turn():
+    assert patrol.angle_diff(math.radians(170), math.radians(-170)) == pytest.approx(math.radians(-20))
+    assert patrol.angle_diff(0.0, -math.pi / 2) == pytest.approx(math.pi / 2)
+    assert patrol.angle_diff(1.0, 1.0) == 0
+
+
+def test_near_goal_monitor_needs_staying_close_and_still():
+    m = patrol.NearGoalMonitor((0, 0), radius=0.4, stuck_time=8.0)
+    assert not m.update((1.0, 0), 0)          # far away: never stuck
+    assert not m.update((0.3, 0), 1)          # entered the radius, timer starts
+    assert not m.update((0.32, 0), 8.9)       # still close, 7.9 s
+    assert m.update((0.33, 0), 9.0)           # 8 s without moving more than 0.1 m
+    # moving inward resets the timer: Nav2 is still making progress
+    m = patrol.NearGoalMonitor((0, 0), radius=0.4, stuck_time=8.0)
+    for t, x in enumerate([0.39, 0.33, 0.27, 0.21, 0.15]):
+        assert not m.update((x, 0), t * 3)
+    # leaving the radius clears it; radius 0 disables the check
+    assert not m.update((2.0, 0), 100)
+    off = patrol.NearGoalMonitor((0, 0), radius=0, stuck_time=1)
+    assert not any(off.update((0, 0), t) for t in range(5))
+
+
 @pytest.mark.parametrize("mode, return_home, count", [
     ("reached", False, 1), ("rejected", False, 1), ("timeout", False, 1), ("no_plan", False, 1),
     ("interrupted", False, 1), ("reached", True, 1), ("no_plan", True, 1), ("interrupted", True, 1),
-    ("timeout", False, 3), ("reached", True, 3),
+    ("timeout", False, 3), ("reached", True, 3), ("near", False, 1), ("near", True, 1),
 ])
 def test_patrol_records_and_cancels_without_robot(tmp_path, monkeypatch, mode, return_home, count):
     # Real Humble message classes + CvBridge/OpenCV, fake only the navigation/TF
@@ -112,8 +134,9 @@ def test_patrol_records_and_cancels_without_robot(tmp_path, monkeypatch, mode, r
     from geometry_msgs.msg import TransformStamped
     from sensor_msgs.msg import Image
 
+    # task: which Nav2 task is running ("nav" = NavigateToPose, "spin" = Spin behavior)
     state = SimpleNamespace(cancel=0, spin=0, closed=False, stopped=0, ticks=0, callback=None,
-                            paths=[])
+                            paths=[], spins=[], task=None)
     goals = []
     transform = TransformStamped()
     transform.transform.translation.x = 1.0
@@ -148,19 +171,30 @@ def test_patrol_records_and_cancels_without_robot(tmp_path, monkeypatch, mode, r
 
         def goToPose(self, goal):
             goals.append(goal)
+            state.task, state.cancel_at_start = "nav", state.cancel
             return mode != "rejected"
+
+        def spin(self, spin_dist, time_allowance):
+            state.spins.append(spin_dist)
+            state.task = "spin"
+            return True
 
         def isTaskComplete(self):
             if mode == "interrupted":
                 raise KeyboardInterrupt
             state.ticks += 1
-            return mode != "timeout" or state.cancel > 0
+            if state.task == "spin":
+                return True
+            # "timeout" and "near": Nav2 never finishes on its own, only after a cancel
+            return mode not in ("timeout", "near") or state.cancel > state.cancel_at_start
 
         def cancelTask(self):
             state.cancel += 1
 
         def getResult(self):
-            return commander.TaskResult.CANCELED if mode == "timeout" else commander.TaskResult.SUCCEEDED
+            if state.task == "nav" and mode in ("timeout", "near"):
+                return commander.TaskResult.CANCELED
+            return commander.TaskResult.SUCCEEDED
 
         def destroy_node(self):
             state.closed = True
@@ -188,8 +222,9 @@ def test_patrol_records_and_cancels_without_robot(tmp_path, monkeypatch, mode, r
     args = SimpleNamespace(use_sim_time=True, frame="map", base_frame="base_footprint",
                            start_x=None, start_y=None, out=str(tmp_path), dist=[2.5],
                            cmd_vel_topic="/cmd_vel", image_topic="/camera/color/image_raw",
-                           timeout=0.005, settle_time=0, image_timeout=3,
-                           return_home=return_home, order="auto", distance="nav")
+                           timeout=0.005 if mode == "timeout" else 300, settle_time=0,
+                           image_timeout=3, return_home=return_home, order="auto", distance="nav",
+                           near_radius=0.4, stuck_time=0.05, align_tolerance=0.1)
     pois = [dict(sample_poi(), id=f"P{i}", target={"x": 1.0 + 4 * i, "y": 2.0}) for i in range(count)]
     if mode == "interrupted":
         with pytest.raises(KeyboardInterrupt):
@@ -202,7 +237,8 @@ def test_patrol_records_and_cancels_without_robot(tmp_path, monkeypatch, mode, r
     if return_home and mode != "interrupted":
         # Even after a failed POI the robot heads back to where it started.
         home = all_rows[-1]
-        assert len(all_rows) == count + 1 and home["id"] == "HOME" and home["result"] == "reached"
+        assert len(all_rows) == count + 1 and home["id"] == "HOME"
+        assert home["result"] in patrol.REACHED
         assert (float(home["goal_x"]), float(home["goal_y"])) == (1.0, 4.5)
         last = goals[-1].pose
         assert (last.position.x, last.position.y) == (1.0, 4.5)
@@ -224,10 +260,17 @@ def test_patrol_records_and_cancels_without_robot(tmp_path, monkeypatch, mode, r
         # the viewpoint is checked from the robot, then the ordering asks Nav2 for path lengths
         assert state.paths[0] is False and True in state.paths
         assert row["plan_m"] != ""
-    assert row["result"] == mode
+    assert row["result"] == ("reached_near" if mode == "near" else mode)
     assert state.closed
-    # the fake navigator completes every task after the first cancel, so one cancel at most
-    assert state.cancel == (1 if mode in ("timeout", "interrupted") else 0)
+    # the fake navigator finishes a task only after it is cancelled: one cancel per stuck task
+    expected_cancel = {"timeout": count, "interrupted": 1, "near": 2 if return_home else 1}
+    assert state.cancel == expected_cancel.get(mode, 0)
+    if mode == "near":
+        # the robot (yaw 0) sits on P0's viewpoint, which faces -y: the fallback cancels Nav2,
+        # spins -90 deg itself and still takes the photo; at home it is already aligned
+        assert state.spins == [pytest.approx(-math.pi / 2)]
+        assert row["image_result"] == "saved"
+        assert float(row["yaw_err_deg"]) == pytest.approx(90.0)
     if mode == "reached":
         assert row["image_result"] == "saved" and state.spin >= 2
         image = cv2.imread(str(next(tmp_path.glob("*/*.png"))))
