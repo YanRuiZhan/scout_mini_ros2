@@ -58,12 +58,22 @@ prime-run ros2 launch scout_mini_navigation navigation.launch.py map:=maps/wareh
 ros2 run scout_mini_sim poi_patrol.py --poi maps/warehouse_poi.yaml
 ```
 
-第 2～4 步也可以一条命令完成（参数、离线视点规划 `plan_offline.py` 和 `plan:=` 用法见
+第 2～4 步也可以一条命令完成（参数见
 [仿真说明 · 一键启动](src/scout_mini_sim/README.md#一键启动仿真导航和巡检)）：
 
 ```zsh
 prime-run ros2 launch scout_mini_navigation sim_patrol.launch.py \
   map:=maps/warehouse.yaml poi:=maps/warehouse_poi.yaml
+```
+
+**推荐：先离线生成视点**（视点更合理，到点更准）。只在地图、设备或 Nav2 代价参数改过后才需要重新生成，
+巡检脚本会自动检查规划是否过期：
+
+```zsh
+ros2 run scout_mini_sim plan_offline.py --poi maps/warehouse_poi.yaml --map maps/warehouse.yaml \
+  --pcd maps/warehouse.pcd --world src/scout_mini_sim/worlds/warehouse.sdf --out maps/patrol_plan.yaml
+prime-run ros2 launch scout_mini_navigation sim_patrol.launch.py \
+  map:=maps/warehouse.yaml plan:=maps/patrol_plan.yaml
 ```
 
 `initial_pose` 默认 `"0 0 0"`：FAST-LIO 从默认出生点建的地图，原点就是出生点。
@@ -130,6 +140,29 @@ FAST-LIO2 本身（`lio.launch.py`）只作为可选里程计，不知道先验�
 | 全局规划 | Smac Planner 2D（A*） | 代价参与路径代价、自带平滑；全局代价地图膨胀半径 `1.0 m`，路径尽量沿通道中间 |
 | 局部控制 | Regulated Pure Pursuit（RPP） | 追踪路径前方一点；弯道半径小于 `1.25 m` 或靠近障碍物时自动减速；车头偏离路径超过 45° 先原地转向 |
 | 速度上限 | `1.0 m/s`、`0.8 rad/s` | 与 Gazebo 底盘上限一致；改动时需同步多处，见 `nav2_params.yaml` 开头注释，`test_odometry_config.py` 会检查 |
+| 到点判定 | 位置 / 朝向容差 `0.25 m` / `0.25 rad` | 15 s 内平移不足 `0.2 m` 判为卡住、触发恢复行为 |
+
+### 巡检流程与算法
+
+```text
+离线（plan_offline.py，地图/设备不变就只跑一次）
+  设备几何 → 候选视点采样 → 硬约束筛选（空闲/安全距离/可达/视野/三维遮挡）
+  → 加权评分 → 每台保留 3 个方向错开的视点 → 代价感知 8 邻域 A* 路程矩阵
+在线（poi_patrol.py）
+  过期检查 → 求访问顺序（Held-Karp / 2-opt）→ 逐点：Nav2 导航 → 近点兜底 → 拍照 → 写 CSV
+  某点失败 → 从当前位置重排剩余设备 → 全部完成后返回出发点
+```
+
+| 环节 | 方法 | 说明 |
+|---|---|---|
+| 视点生成 | 极坐标采样 + 硬约束 + 加权评分 | 相机视野、PCD 三维遮挡、离障碍物余量；装得高的设备自动退远 |
+| 路程矩阵 | 代价感知 8 邻域 A* | 按 Nav2 的膨胀代价公式重写，参数自动从 `nav2_params.yaml` 读取 |
+| 访问顺序 | Held-Karp（≤ 13 点，精确最优）/ 2-opt | 闭合路线固定先去近的一端，每次顺序相同 |
+| 近点兜底 | 卡在视点 0.4 m 内超过 8 s 就取消 Nav2，自己转正车头 | 解决 RPP 与到点判定差几厘米时的原地转圈 |
+| 换候选 | 某视点 Nav2 规划不过去就换下一个 | 在线 NBV（实时检查视线遮挡）尚未实现 |
+
+详细说明见[仿真说明 · POI 自动巡检](src/scout_mini_sim/README.md#poi-自动巡检)，
+全部参数见 [docs/parameters.md](docs/parameters.md) 第 10～12 节。
 
 ### 常见问题
 
@@ -143,6 +176,10 @@ FAST-LIO2 本身（`lio.launch.py`）只作为可选里程计，不知道先验�
 | 启动导航报 `PCD map not found` | 三维定位找不到与二维地图同名的 PCD。用 `pcd_map:=` 指定 FAST-LIO 保存的 PCD，或 `localizer:=amcl` |
 | 车在 RViz 中不动或位置不对，定位器日志反复拒绝配准 | 初始位姿偏差太大，NDT 无法收敛。检查 `initial_pose` 是否与出生点一致，或在 RViz 用 2D Pose Estimate 重设 |
 | 巡检目标落在仓库外，小车开出大门 | POI 坐标系与地图不一致，见仿真说明中的 `--poi-transform` |
+| 小车到视点旁边后原地转圈，很久才拍照 | RPP 停车点与到点判定差几厘米导致的死锁。巡检脚本的近点兜底会处理（CSV 记为 `reached_near`）；仍转圈时调大 `--near-radius` 或调小 `--stuck-time` |
+| 巡检报离线规划已过期（地图 / POI / Nav2 参数改过） | 按提示重新运行 `plan_offline.py` |
+| `plan_offline.py` 某台设备 0 个视点 | 看日志里打印的原因：通常是设备太高需要退远（调大 `--r-limit`）或前方空间不够 |
+| 一键启动后 Gazebo 是空白的"快速开始"界面 | 旧版本 launch 的问题，已修复；拉取更新并重新 `colcon build` |
 
 ## 全量构建（含实车包）
 

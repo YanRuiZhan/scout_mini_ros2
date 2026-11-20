@@ -111,10 +111,10 @@ ros2 topic hz /scout/imu/data_settled  # lidar_time.py 转发后，应与上一�
 
 若 LIO 位姿与 EKF 同一时刻相差超过 0.5 m 或 15°，`lio_to_odom` 丢弃该帧；连续约 2 s 超限时判定 LIO 发散，重新对齐并报错，此时应检查 `IMU gap` 警告并重启 `lio.launch.py`。
 
-没有启动 FAST-LIO 时，EKF 只用轮速 + IMU：航向仍不受打滑影响，位置会慢慢漂移，由 AMCL 修正。FAST-LIO 在仿真中仍有 `IMU gap` 问题，默认导航流程不启动它。
+没有启动 FAST-LIO 时（默认导航流程），EKF 只用轮速 + IMU：航向仍不受打滑影响，位置会慢慢漂移，由全局定位（默认三维 NDT，可选 AMCL）修正。FAST-LIO 在仿真中仍有 `IMU gap` 问题，默认导航流程不启动它。
 
 ```text
-map                          # AMCL（导航时）
+map                          # 三维 NDT 或 AMCL（导航时）
 └── odom
     ├── base_footprint       # EKF（LIO + 轮速 + IMU）
     │   └── base_link        # 机器人模型和传感器
@@ -135,7 +135,16 @@ ros2 run tf2_ros tf2_echo odom base_footprint --ros-args -p use_sim_time:=true
 ## POI 自动巡检
 
 `poi_patrol.py` 已安装为本包的可执行脚本。它在现有 Nav2 上依次规划、导航、拍照，
-不启动 Gazebo 或导航节点。先重新构建并加载环境：
+不启动 Gazebo 或导航节点（需要一起启动时用下文的[一键启动](#一键启动仿真导航和巡检)）。
+
+视点有两种来源，二选一：
+
+| 方式 | 命令 | 视点怎么来 | 适合 |
+|---|---|---|---|
+| 在线（`--poi`） | `poi_patrol.py --poi ...` | 每台设备正前方 `--dist` 几个固定距离，规划得通就用 | 快速试跑、调试单个设备 |
+| 离线（`--plan`） | 先 `plan_offline.py`，再 `poi_patrol.py --plan ...` | 按视野、遮挡、安全余量打分选出，每台 3 个备选 | 正式巡检；拍得更完整，到点更顺 |
+
+两种方式共用后面的导航、近点兜底、拍照和 CSV 记录。先重新构建并加载环境：
 
 ```zsh
 source /opt/ros/humble/setup.zsh
@@ -145,7 +154,7 @@ source install/setup.zsh
 ```
 
 运行依赖已写入 `package.xml`：`nav2_simple_commander`、`cv_bridge`、
-`python3-yaml` 和 `python3-opencv`，缺少依赖时按本文构建部分的 `rosdep` 命令安装。
+`python3-yaml`、`python3-opencv` 和 `python3-numpy`（离线规划用），缺少依赖时按本文构建部分的 `rosdep` 命令安装。
 默认使用 `/clock`、`/camera/color/image_raw`、`map` 和 `base_footprint`，
 与本仓库的 bridge 和 Nav2 配置一致。
 
@@ -153,7 +162,8 @@ source install/setup.zsh
 包含当前 `warehouse.sdf` 的 10 个目标。`target` 是模型贴图表面的 XY 中心，
 `normal` 是朝向可观测侧的外法向；脚本会将法向归一化。
 观测位置是 `target + dist * normal`，机器人朝向目标。
-默认距离按 `2.5、3.0、2.0 m` 尝试，兼顾本车水平安装且离地约 `0.40 m`（与实车一致）的相机；
+在线方式默认距离按 `2.5、3.0、2.0 m` 尝试，兼顾本车水平安装且离地约 `0.40 m`（与实车一致）的相机；
+装得高的设备在这些距离可能拍不全，此时改用离线规划（会自动退远到整面入画）；
 导航成功与图像保存分别记录，不代表已识别缺陷或已完整拍到目标。
 
 先无需 ROS 检查生成的观测位姿，也可以只看部分编号：
@@ -199,7 +209,7 @@ prime-run ros2 launch scout_mini_navigation navigation.launch.py map:=/绝对路
 ```
 
 可选的 FAST-LIO 里程计在两者之间启动，并保持小车静止直到出现 `IMU Initial Done`。
-AMCL 默认以出生点为初始位姿（`navigation.launch.py` 的 `initial_pose`，见导航说明），
+定位器默认以出生点为初始位姿（`navigation.launch.py` 的 `initial_pose`，见导航说明），
 在 RViz 确认激光与地图对齐后再开始巡检。脚本只等待定位，不自动重置初始位姿。
 导航地图建立流程与 TF 约束见 [导航说明](../scout_mini_navigation/README.md)。
 对已经转换到 map 的 POI 文件，可在工作空间根目录运行：
@@ -213,7 +223,7 @@ ros2 run scout_mini_sim poi_patrol.py --poi /绝对路径/poi_in_map.yaml \
 到 `base_footprint` 的 TF 可用即开始。也可指定节点名（如 `lidar_localization`、`amcl`、
 `slam_toolbox`），脚本会额外等待它进入 active。
 运行时默认从当前 TF 决定排序起点；`--start-x/--start-y` 只影响排序，不会初始化定位。
-启动准备默认等待 60 秒，可通过 `--startup-timeout` 调整。
+启动准备默认等待 60 秒，可通过 `--startup-timeout` 调整（一键启动传 180 秒）。
 `--timeout` 为单目标导航墙钟超时；`--image-timeout` 控制新帧等待时间。
 相机若以 `cameras:=false` 关闭，会记录 `image_result=no_image`。
 
@@ -221,8 +231,8 @@ ros2 run scout_mini_sim poi_patrol.py --poi /绝对路径/poi_in_map.yaml \
 `id=HOME` 记录返回结果；`--no-return-home` 可关闭。
 
 **访问顺序**由独立模块 [`scripts/tour_planner.py`](scripts/tour_planner.py) 决定。出发前，脚本先为每个
-设备选定观测点，再用 Nav2 规划器（`use_start=True`）求起点与各观测点两两之间的实际路径长度，
-交给规划器求顺序；CSV 的 `plan_m` 列记录每段的规划路程。某个点失败时，以当前位置为起点
+设备选定观测点，再求起点与各观测点两两之间的路程，交给规划器求顺序：在线方式用 Nav2 规划器
+（`use_start=True`）现场算全部路程；离线方式直接用规划文件里的路程矩阵，只现场算起点那一行。CSV 的 `plan_m` 列记录每段的规划路程。某个点失败时，以当前位置为起点
 对剩余的点重新排序，终点仍为出发点。
 
 | 参数 | 说明 |
@@ -255,7 +265,7 @@ ros2 run scout_mini_sim poi_patrol.py --poi /绝对路径/poi_in_map.yaml \
 `image_result` 单独记录 `saved`、
 `no_image` 或 `error`。到点后默认等待 0.5 秒，随后只接收采集时间更新的图像。
 Ctrl+C 时保留当前记录、请求取消导航并向 `/cmd_vel` 发布零速度。
-本轮适配的自动测试没有验证 Gazebo 中整条路线的可达性，首次请用 `--only` 单点验证。
+仓库场景的整条路线已在 Gazebo 中跑通；换场景或改了 POI 后，首次请先用 `--only` 单点验证。
 
 
 ### 离线视点规划（`plan_offline.py`）
@@ -270,6 +280,8 @@ ros2 run scout_mini_sim plan_offline.py \
 ```
 
 不需要启动 ROS 节点；也可以直接 `/usr/bin/python3 src/scout_mini_sim/scripts/plan_offline.py ...`。
+POI 文件是 `frame_id: world` 时同样要传 `--poi-transform`（与巡检脚本相同）；`--only` 只规划部分设备。
+运行时间主要花在路程矩阵上：仓库场景 28 个视点约 40 s（`--search dijkstra` 更快）。
 
 对每台设备，在检测面正前方按距离 `--r-min`～`--r-max`、偏角 ±`--phi-max` 采样候选位姿，
 先用硬约束筛掉不能用的：停车格必须已知空闲、离障碍物不小于车身半径 + 余量、从 `--start` 可达、
@@ -296,7 +308,8 @@ ros2 run scout_mini_sim plan_offline.py \
 POI 文件里的 `z`（中心离地高度）和 `size: {w, h}` > `--world` 读模型网格 > 脚本里按类型的缺省值。
 缺省值只是占位，实车请实测后写进 POI 文件。每台设备用了哪种来源，运行时会打印，也写在输出文件里。
 
-巡检时用 `--plan` 读取：每台设备按评分依次尝试候选视点（此刻规划不过去就换下一个），
+巡检时用 `--plan` 读取：每台设备按评分依次尝试候选视点（此刻 Nav2 规划不过去就换下一个；
+目前只看路径能否规划，还不检查实时障碍物是否挡住视线，见下文"尚未实现"），
 视点之间用离线路程，只在线计算"起点 → 各视点"这一行，启动时的规划从几十次 Nav2 调用减到十次左右。
 CSV 的 `view_rank` 记录用的是第几候选。
 
@@ -322,6 +335,11 @@ ros2 run scout_mini_sim poi_patrol.py --plan maps/patrol_plan.yaml --map maps/wa
 栅格默认按 0.1 m 降采样（Nav2 用 0.05 m）、没有 Nav2 的路径平滑、只用静态地图（不含实时障碍物）、
 膨胀距离用近似算法。这些差异通常只有几个百分点，而且对所有视点对的影响方向一致，
 对访问顺序影响很小；起点那一行在线用 Nav2 计算。
+
+**尚未实现（在线 NBV）**：离线视点只考虑建图时的静态环境。巡检时若有新放的箱子、路过的人挡在视点前，
+目前不会发现，照样到点拍照。计划中的改进：快到视点时用全局代价地图的实时障碍物重新检查视线，
+被挡就换评分最高的另一个候选；全部被挡则挪到队尾最后再试，仍不行在 CSV 记为 `occluded`；
+最后再加拍照后的图像确认。
 
 ### 一键启动仿真、导航和巡检
 

@@ -111,6 +111,18 @@ SLAM Toolbox 建的二维地图没有 PCD，需加 `localizer:=amcl`。
 默认 `slam:=false`；未指定有效地图时会明确报错，而不是加载无关的示例地图。
 可用 `rviz:=false` 或 `params_file:=/绝对路径/参数.yaml`。
 
+## 一键启动仿真、导航和巡检
+
+`launch/sim_patrol.launch.py` 依次启动 `scout_mini_sim` 的仿真、本包的导航和巡检脚本，在仓库根目录运行：
+
+```zsh
+prime-run ros2 launch scout_mini_navigation sim_patrol.launch.py \
+  map:=maps/warehouse.yaml plan:=maps/patrol_plan.yaml   # 或 poi:=maps/warehouse_poi.yaml
+```
+
+`patrol:=false` 只起仿真和导航。离线规划的生成方法和全部参数见
+[仿真说明 · 一键启动](../scout_mini_sim/README.md#一键启动仿真导航和巡检)。
+
 ## 配置与限制
 
 - `config/nav2_params.yaml` 基于本机 Humble 的 Nav2 / SLAM Toolbox 默认配置，
@@ -135,6 +147,8 @@ SLAM Toolbox 建的二维地图没有 PCD，需加 `localizer:=amcl`。
   不包含三维避障。
   全局代价地图膨胀半径 `1.0 m`（局部 `0.65 m`），让全局路径尽量沿通道中间走。
   雷达平面之外的低矮/悬空障碍不保证可检测。
+- 到点判定：位置容差 `0.25 m`、朝向容差 `0.25 rad`；进度检查 15 s 内平移不足 `0.2 m` 判为卡住。
+  控制器频率 `10 Hz`，与实际能达到的频率一致（RPP 按它计算角加速度限制）。
 - 不要启动实车 `scout_mini_base`，不要让遥控与 Nav2 同时发布速度。
 - 仿真底盘没有命令超时停车。结束导航前应取消目标并显式停车；
   不能把关闭 launch 当作可靠的急停：

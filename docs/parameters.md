@@ -28,6 +28,9 @@
 | 不用每次点 2D Pose Estimate | [6. 启动参数](#6-启动参数) 的 `initial_pose` |
 | 仿真卡、RTF 低 | [9. 仿真](#9-仿真) |
 | 拍照距离、超时 | [10. 巡检脚本](#10-巡检脚本-poi_patrolpy) |
+| 到视点后原地转圈 | [10. 巡检脚本](#10-巡检脚本-poi_patrolpy) 的近点兜底 `--near-radius` / `--stuck-time` |
+| 视点不好、设备拍不全、某设备没有视点 | [11. 离线视点规划](#11-离线视点规划-plan_offlinepy) 的距离范围和 `--r-limit` |
+| 一条命令启动全部 | [12. 一键启动](#12-一键启动-sim_patrollaunchpy) |
 
 ---
 
@@ -238,6 +241,7 @@
 | `--dist` | `2.5 3.0 2.0` m | 观测距离候选，依次尝试直到规划成功 |
 | `--only` | 全部 | 只巡检指定编号 |
 | `--timeout` | `300` s | 单个目标的导航超时 |
+| `--startup-timeout` | `60` s | 等待 Nav2 激活和定位 TF 的时间（一键启动传 `180`） |
 | `--settle-time` | `0.5` s | 到点后拍照前的静置时间 |
 | `--image-timeout` | `3.0` s | 等待新图像的时间 |
 | `--near-radius` | `0.4` m | 近点兜底：离视点多近时启用；`0` 关闭 |
@@ -260,6 +264,9 @@
 | `--pcd` | 无 | 建图 PCD，三维遮挡检查；不给则用二维栅格保守检查 |
 | `--world` | 无 | 仿真 world，从模型网格读设备高度和尺寸 |
 | `--start X Y` | `0 0` | 出发位置，用于可达性检查 |
+| `--poi-transform TX TY YAW` | 无 | POI 是 `frame_id: world` 时转到地图坐标，同巡检脚本 |
+| `--only` | 全部 | 只规划指定编号 |
+| `--out` | `patrol_plan.yaml` | 输出文件 |
 | `--r-min` / `--r-max` / `--r-step` | `1.5` / `4.0` / `0.25` m | 离检测面的距离范围和步长 |
 | `--r-limit` | `7.0` m | 整面入画需要退得比 `--r-max` 更远时，最多放宽到这里 |
 | `--phi-max` / `--phi-step` | `60` / `10` ° | 偏离法向的角度范围和步长 |
@@ -289,5 +296,6 @@
 | `nav_delay` / `patrol_delay` | `8` / `5` s | 启动间隔，电脑慢就调大 |
 | `startup_timeout` | `180` s | 巡检脚本等待 Nav2 和定位就绪的最长时间 |
 | `gui` / `rviz` | `true` / `true` | Gazebo 界面、RViz |
+| `world` | 空 | 空时用 `scout_mini_sim` 的 `warehouse.sdf` |
 | `localizer` / `initial_pose` / `pcd_map` | `ndt` / `"0 0 0"` / 空 | 同 `navigation.launch.py` |
 | `shutdown_on_exit` | `false` | 巡检结束后一并退出 |
