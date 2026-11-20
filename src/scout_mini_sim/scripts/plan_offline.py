@@ -16,6 +16,7 @@
 2. 读入二维栅格地图（--map），算出每个格子到最近障碍物的距离（安全余量）；
    可选读入建图得到的 PCD（--pcd）做三维遮挡检查，没有 PCD 时用二维栅格保守检查。
 3. 对每台设备，在检测面正前方按 (距离 r, 偏离法向的角度 phi) 采样候选位姿，车头朝向设备：
+   距离上限默认 --r-max；装得高的设备整面入画需要退得更远时，自动放宽到 --r-limit。
    - 硬约束（不满足就丢弃，原因计入统计）：
        在地图内且是已知空闲格 / 离障碍物不小于 车身半径 + 余量 / 从起点可达 /
        设备整体落在相机视野内（竖直方向尤其关键）/ 可见比例不低于 --min-visibility
@@ -24,7 +25,9 @@
        visibility 检测面可见比例；clearance 安全余量越大越好
 4. 按得分从高到低挑 --keep 个视点，且彼此的偏角 phi 至少相差 --min-separation：
    最佳视点被临时遮挡时，备选来自不同方向，在线才有得换。
-5. 在栅格上用 Dijkstra 算所有入选视点两两之间的路程（tour_planner.GridMap）。
+5. 在栅格上用代价感知的 8 邻域 A* 算所有入选视点两两之间的路程（tour_planner.GridMap）：
+   代价模型与 Nav2 一致（膨胀层代价 + Smac 2D 的 cost_travel_multiplier），路径沿通道中线，
+   比几何最短路更接近 Nav2 实际规划出的长度。
 6. 写出 YAML，并记录 POI / 地图 / PCD 文件的 SHA-1；巡检时发现文件改过就会提示重新规划。
 
 用法（在仓库根目录）
@@ -289,11 +292,40 @@ def unit(vec):
     return vec["x"] / norm, vec["y"] / norm
 
 
-def sample_candidates(poi, p):
+def fit_distance(geo, p, camera=CAMERA):
+    """正对检测面时，整面完整入画所需的最小距离 r（base_footprint 到检测面，m）。
+
+    竖直方向：相机水平安装、离地 mount_height，检测面上沿高出相机 top、下沿低于相机 bottom，
+    要求 top / r_cam ≤ tan(半竖直视场)、bottom / r_cam ≤ tan(半竖直视场)；
+    水平方向：半宽 / r_cam ≤ tan(半水平视场)。三者取最大，再加上相机在车体前方的距离。
+    例：面板上沿离地 1.9 m、相机 0.4 m，高出 1.5 m，半竖直视场留余量后约 18.4°，
+        需要 r_cam ≥ 1.5 / tan(18.4°) ≈ 4.5 m —— 这就是"装得高的设备要退远"的来源。
+    """
+    tan_v = math.tan(vertical_fov(camera) / 2 - p.fov_margin)
+    tan_h = math.tan(camera["hfov"] / 2 - p.fov_margin)
+    top = geo["z"] + geo["h"] / 2 - camera["mount_height"]
+    bottom = camera["mount_height"] - (geo["z"] - geo["h"] / 2)
+    need = max(max(top, 0.0) / tan_v, max(bottom, 0.0) / tan_v, geo["w"] / 2 / tan_h)
+    return need + camera["forward"]
+
+
+def distance_range(geo, p):
+    """这台设备的采样距离范围 [r_min, r_hi]。
+
+    整面入画所需距离超过 --r-max 时，把上限放宽到"所需距离 + 1 m"，最多到 --r-limit；
+    不超过时保持 --r-max，不额外增加计算量。
+    """
+    r_fit = fit_distance(geo, p)
+    r_hi = p.r_max if r_fit <= p.r_max - 0.5 else min(p.r_limit, max(p.r_max, r_fit + 1.0))
+    return p.r_min, r_hi
+
+
+def sample_candidates(poi, p, r_hi=None):
     """在检测面正前方按 (r, phi) 网格采样候选位姿，车头朝向设备中心。"""
     tx, ty = poi["target"]["x"], poi["target"]["y"]
     nx, ny = unit(poi["normal"])
-    for r in map(float, np.arange(p.r_min, p.r_max + 1e-9, p.r_step)):
+    r_hi = p.r_max if r_hi is None else r_hi
+    for r in map(float, np.arange(p.r_min, r_hi + 1e-9, p.r_step)):
         for phi_deg in map(float, np.arange(-p.phi_max, p.phi_max + 1e-9, p.phi_step)):
             phi = math.radians(phi_deg)
             dx = nx * math.cos(phi) - ny * math.sin(phi)      # 法向旋转 phi
@@ -363,10 +395,28 @@ def select_diverse(scored, keep, min_separation):
     return chosen
 
 
+def explain_failure(r_fit, rejected, p):
+    """一台设备没有可用视点时，给出最可能的原因和改法。"""
+    if r_fit > p.r_limit:
+        return (f"原因：整面入画要退到 {r_fit:.1f} m，超过 --r-limit {p.r_limit:g} m。"
+                "可加大 --r-limit（前方要有这么大空地）、把相机调成上仰，"
+                "或在 POI 里只写需要看清的区域的 z / size（如面板上的仪表区）")
+    top = max(rejected, key=rejected.get) if rejected else ""
+    hints = {
+        "fov": f"原因：{p.r_min:g}～{p.r_limit:g} m 内能放下整面的位置都被其它约束排除了，"
+               "检查设备前方是否有足够空地",
+        "too_close": "原因：设备前方太窄，停车位置离障碍物不够远；可减小 --clearance-margin",
+        "not_free": "原因：设备前方在地图里是障碍物或未知区域，检查 POI 坐标和法向",
+        "occluded": "原因：视线被挡住；检查 PCD 里设备前方的障碍物，或减小 --min-visibility",
+        "unreachable": "原因：从 --start 开不到设备前方",
+    }
+    return hints.get(top, "原因不明，请检查设备坐标、法向和地图")
+
+
 def plan_device(poi, geo, grid, voxels, reach, p):
     """一台设备的候选视点：返回 (入选列表, 被丢弃原因的计数)。"""
     scored, rejected = [], {}
-    for c in sample_candidates(poi, p):
+    for c in sample_candidates(poi, p, distance_range(geo, p)[1]):
         scores, reason = evaluate(c, poi, geo, grid, voxels, reach, p)
         if scores is None:
             rejected[reason] = rejected.get(reason, 0) + 1
@@ -397,8 +447,11 @@ def make_plan(p, log=print):
         voxels = Voxels(read_pcd_xyz(p.pcd), res=p.voxel, ground_z=p.ground_z)
         log(f"  地面 z = {voxels.ground_z:.3f}，体素 {voxels.occ.shape}")
 
-    # 可达性：从起点在膨胀后的栅格上做一次 Dijkstra，能到的格子都可达
-    gm = tour_planner.GridMap(p.map, robot_radius=p.robot_radius, step=p.grid_step)
+    # 路程计算用的栅格：按车身内切半径膨胀（与 Smac 2D 一致），并带 Nav2 膨胀层代价
+    gm = tour_planner.GridMap(p.map, robot_radius=p.inscribed_radius, step=p.grid_step, costmap={
+        "inflation_radius": p.inflation_radius, "cost_scaling_factor": p.cost_scaling,
+        "travel_multiplier": p.travel_multiplier, "inscribed_radius": p.inscribed_radius})
+    # 可达性：从起点做一次 Dijkstra，能到的格子都可达
     start_cell = gm.free_cell_near(*p.start)
     if start_cell is None:
         raise ValueError(f"起点 {p.start} 附近没有可通行的格子，请检查 --start")
@@ -411,8 +464,13 @@ def make_plan(p, log=print):
     for poi in pois:
         geo, source = device_geometry(poi, from_world)
         chosen, rejected = plan_device(poi, geo, grid, voxels, reach, p)
+        r_fit = fit_distance(geo, p)
         summary = ", ".join(f"{k} {v}" for k, v in sorted(rejected.items())) or "无"
-        log(f"{poi['id']:<8} 几何来源 {source:<7} 入选 {len(chosen)} 个；丢弃：{summary}")
+        log(f"{poi['id']:<8} 几何来源 {source:<7} 中心高 {geo['z']:.2f} m，宽×高 "
+            f"{geo['w']:.2f}×{geo['h']:.2f} m，整面入画需 r ≥ {r_fit:.2f} m；"
+            f"入选 {len(chosen)} 个；丢弃：{summary}")
+        if not chosen:
+            log("         " + explain_failure(r_fit, rejected, p))
         indices = []
         for rank, c in enumerate(chosen, 1):
             indices.append(len(viewpoints))
@@ -427,18 +485,29 @@ def make_plan(p, log=print):
             "id": poi["id"], "type": poi["type"],
             "target": {k: round(v, 4) for k, v in poi["target"].items()},
             "normal": {k: round(v, 4) for k, v in poi["normal"].items()},
-            "geometry": dict(geo, source=source),
+            "geometry": dict(geo, source=source, fit_distance=round(r_fit, 3)),
             "viewpoints": indices,
         })
 
     # 视点之间的路程矩阵；起点那一行单独存（起点固定时可直接用，否则巡检时在线重算）
-    log(f"计算 {len(viewpoints)} 个视点两两之间的路程（栅格 Dijkstra，可能需要几十秒）…")
+    n = len(viewpoints)
+    jobs = n * (n - 1) // 2 if p.search == "astar" else n
+    log(f"计算 {n} 个视点两两之间的路程（代价感知 8 邻域 {p.search.upper()}，共 {jobs} 次搜索）…")
+    started = datetime.datetime.now()
+
+    def progress(k, total):
+        if k == total or k % max(1, total // 10) == 0:
+            log(f"  {k}/{total}，已用 {(datetime.datetime.now() - started).seconds} s")
+
     points = [(v["x"], v["y"]) for v in viewpoints]
-    matrix = gm.distances(points) if points else []
-    start_row = []
-    for v in viewpoints:
-        c = gm.free_cell_near(v["x"], v["y"])
-        start_row.append(reached.get(c, math.inf) * gm.res if c is not None else math.inf)
+    matrix = gm.distances(points, method=p.search, progress=progress) if points else []
+    # 起点那一行：同一代价模型，从起点到每个视点
+    cells = [gm.free_cell_near(v["x"], v["y"]) for v in viewpoints]
+    if p.search == "astar":
+        start_row = [gm.search(start_cell, c) * gm.res if c is not None else math.inf for c in cells]
+    else:
+        lengths = gm.search(start_cell)
+        start_row = [lengths.get(c, math.inf) * gm.res if c is not None else math.inf for c in cells]
 
     sources = {"poi": {"path": str(p.poi), "sha1": file_sha1(p.poi)},
                "map": {"path": str(p.map), "sha1": file_sha1(*map_files(p.map))},
@@ -453,7 +522,7 @@ def make_plan(p, log=print):
         "generated": datetime.datetime.now().isoformat(timespec="seconds"),
         "sources": sources,
         "params": params,
-        "distance": "grid",
+        "distance": f"grid_{p.search}_cost_aware",
         "devices": devices,
         "viewpoints": viewpoints,
         "matrix": [[round(float(d), 3) for d in row] for row in matrix],
@@ -480,7 +549,9 @@ def build_parser():
     ap.add_argument("--ground-z", type=float, help="PCD 中地面的 z；默认自动估计")
     # --- 候选采样 ---
     ap.add_argument("--r-min", type=float, default=1.5, help="离检测面的最小距离 (m)")
-    ap.add_argument("--r-max", type=float, default=4.0, help="离检测面的最大距离 (m)")
+    ap.add_argument("--r-max", type=float, default=4.0, help="离检测面的常规最大距离 (m)")
+    ap.add_argument("--r-limit", type=float, default=7.0,
+                    help="装得高或尺寸大的设备在 --r-max 内放不进画面时，最多退到这个距离 (m)")
     ap.add_argument("--r-step", type=float, default=0.25)
     ap.add_argument("--phi-max", type=float, default=60.0, help="偏离法向的最大角度 (°)")
     ap.add_argument("--phi-step", type=float, default=10.0)
@@ -496,16 +567,28 @@ def build_parser():
     # --- 输出 ---
     ap.add_argument("--keep", type=int, default=3, help="每台设备保留的视点数")
     ap.add_argument("--min-separation", type=float, default=30.0, help="入选视点偏角的最小差 (°)")
+    # --- 路程矩阵（仿照 Nav2：Smac Planner 2D + 全局代价地图膨胀层）---
+    ap.add_argument("--search", default="astar", choices=("astar", "dijkstra"),
+                    help="astar：每对视点一次 8 邻域 A*；dijkstra：每个视点一次一对全部，点多时更快，结果相同")
     ap.add_argument("--grid-step", type=int, default=2, help="路程计算时栅格降采样倍数（越大越快越粗）")
+    ap.add_argument("--inscribed-radius", type=float, default=0.31,
+                    help="车身内切半径 (m)，路径搜索按它膨胀障碍物（车宽 0.58 m 的一半 + padding 0.02）")
+    ap.add_argument("--inflation-radius", type=float, default=1.0, help="全局代价地图膨胀半径 (m)")
+    ap.add_argument("--cost-scaling", type=float, default=2.0, help="膨胀层 cost_scaling_factor")
+    ap.add_argument("--travel-multiplier", type=float, default=2.0, help="Smac 2D cost_travel_multiplier")
     return ap
 
 
 def main(argv=None):
     p = build_parser().parse_args(argv)
     try:
-        positive = [p.r_min, p.r_max, p.r_step, p.phi_step, p.robot_radius, p.voxel, p.target_fill]
-        if any(not math.isfinite(v) or v <= 0 for v in positive) or p.r_min > p.r_max:
-            raise ValueError("距离、步长、半径、体素和画面占比必须为正数，且 --r-min ≤ --r-max")
+        positive = [p.r_min, p.r_max, p.r_limit, p.r_step, p.phi_step, p.robot_radius, p.voxel,
+                    p.target_fill, p.inscribed_radius, p.inflation_radius, p.cost_scaling]
+        if any(not math.isfinite(v) or v <= 0 for v in positive) or not p.r_min <= p.r_max <= p.r_limit:
+            raise ValueError("距离、步长、半径、体素、画面占比和代价参数必须为正数，"
+                             "且 --r-min ≤ --r-max ≤ --r-limit")
+        if not math.isfinite(p.travel_multiplier) or p.travel_multiplier < 0:
+            raise ValueError("--travel-multiplier 必须为非负数")
         if p.keep < 1 or p.grid_step < 1 or not 0 <= p.min_visibility <= 1:
             raise ValueError("--keep、--grid-step 至少为 1，--min-visibility 在 0~1 之间")
         plan = make_plan(p)

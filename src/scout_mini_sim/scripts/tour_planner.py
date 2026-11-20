@@ -234,14 +234,25 @@ def read_pgm(path):
     return width, height, pixels
 
 
+SQRT2 = math.sqrt(2.0)
+# 8 邻域：(行偏移, 列偏移, 步长/格)
+STEPS8 = [(1, 0, 1.0), (-1, 0, 1.0), (0, 1, 1.0), (0, -1, 1.0),
+          (1, 1, SQRT2), (1, -1, SQRT2), (-1, 1, SQRT2), (-1, -1, SQRT2)]
+
+
 class GridMap:
     """ROS map_server 格式的二维栅格（yaml + pgm），用于离线估计路径长度。
 
     占据格按 robot_radius 膨胀后视为不可通行；未知格可通行（与 Nav2 的 allow_unknown 一致）。
     step 为搜索时的降采样倍数（2 → 0.05 m 地图按 0.1 m 搜索），用于提速。
+
+    costmap 为 None 时只求几何最短路（每步代价 = 步长）。
+    给出 costmap（字典，键见 _build_cost）时仿照 Nav2：膨胀层按离障碍物的距离给每格一个代价，
+    Smac Planner 2D 每一步的代价 = 步长 × (1 + cost_travel_multiplier × 代价/252)，
+    于是路径会像 Nav2 一样沿通道中线走；返回的仍是这条路径的几何长度。
     """
 
-    def __init__(self, yaml_path, robot_radius=0.45, step=2):
+    def __init__(self, yaml_path, robot_radius=0.45, step=2, costmap=None):
         import yaml
         meta = yaml.safe_load(Path(yaml_path).read_text())
         width, height, pixels = read_pgm(Path(yaml_path).parent / meta["image"])
@@ -262,6 +273,43 @@ class GridMap:
         for (cy, cx) in occupied:
             for dy, dx in disk:
                 self.blocked.add((cy + dy, cx + dx))
+        self.mult = {}          # 每格的代价倍率；不在字典里的格子为 1.0（离障碍物足够远）
+        if costmap:
+            self._build_cost(occupied, **costmap)
+
+    def _build_cost(self, occupied, inflation_radius=1.0, cost_scaling_factor=2.0,
+                    travel_multiplier=2.0, inscribed_radius=0.31):
+        """按 Nav2 膨胀层公式给障碍物附近的格子算代价倍率。
+
+        Nav2 膨胀层：离最近障碍物 d 米处的代价
+            d <= inscribed_radius                      : 253（车身必然碰撞）
+            inscribed_radius < d <= inflation_radius   : 252 × exp(-cost_scaling_factor × (d - inscribed_radius))
+            d > inflation_radius                       : 0
+        Smac Planner 2D（Node2D::getTraversalCost）：一步的代价 = 步长 × (1 + travel_multiplier × 代价/252)。
+        默认值与 nav2_params.yaml 的全局代价地图和 Smac 2D 一致。
+        """
+        # 多源 Dijkstra：每格到最近占据格的距离（格），只算到 inflation_radius 以内
+        limit = inflation_radius / self.res
+        dist = {c: 0.0 for c in occupied}
+        pq = [(0.0, c) for c in occupied]
+        heapq.heapify(pq)
+        while pq:
+            d, (y, x) = heapq.heappop(pq)
+            if d > dist[(y, x)]:
+                continue
+            for dy, dx, c in STEPS8:
+                v = (y + dy, x + dx)
+                nd = d + c
+                if nd <= limit and nd < dist.get(v, math.inf):
+                    dist[v] = nd
+                    heapq.heappush(pq, (nd, v))
+        for cell, d in dist.items():
+            if cell in self.blocked:
+                continue
+            meters = d * self.res
+            cost = 252.0 if meters <= inscribed_radius else \
+                252.0 * math.exp(-cost_scaling_factor * (meters - inscribed_radius))
+            self.mult[cell] = 1.0 + travel_multiplier * cost / 252.0
 
     def cell(self, x, y):
         return (int((y - self.origin[1]) / self.res), int((x - self.origin[0]) / self.res))
@@ -280,15 +328,14 @@ class GridMap:
         return None if best is None else best[1]
 
     def _dijkstra(self, src):
+        """几何最短路（不计代价），一对全部；用于可达性判断。返回 {格子: 距离（格）}。"""
         dist = {src: 0.0}
         pq = [(0.0, src)]
-        steps = [(1, 0, 1.0), (-1, 0, 1.0), (0, 1, 1.0), (0, -1, 1.0),
-                 (1, 1, math.sqrt(2)), (1, -1, math.sqrt(2)), (-1, 1, math.sqrt(2)), (-1, -1, math.sqrt(2))]
         while pq:
             d, (y, x) = heapq.heappop(pq)
             if d > dist[(y, x)]:
                 continue
-            for dy, dx, c in steps:
+            for dy, dx, c in STEPS8:
                 v = (y + dy, x + dx)
                 if 0 <= v[0] < self.h and 0 <= v[1] < self.w and v not in self.blocked:
                     nd = d + c
@@ -297,15 +344,67 @@ class GridMap:
                         heapq.heappush(pq, (nd, v))
         return dist
 
-    def distances(self, points):
-        """points 两两之间的最短路程矩阵 (m)。"""
+    def search(self, src, goal=None):
+        """代价感知的 8 邻域最短路搜索，最小化 Σ 步长 × 代价倍率，返回路径的几何长度（格）。
+
+        goal 给出时为 A*：启发函数取八方向距离 (octile)，即无障碍、代价全为 1 时的最短步长和；
+        代价倍率 ≥ 1，所以它不会高估，A* 求得的仍是最优路径。到不了返回 inf。
+        goal 为 None 时为 Dijkstra（一次求出到所有格子的结果），返回 {格子: 几何长度}。
+        两者在同一代价模型下给出相同的最优路径，A* 适合单对点，Dijkstra 适合一对全部。
+        """
+        def heuristic(c):
+            if goal is None:
+                return 0.0
+            dy, dx = abs(c[0] - goal[0]), abs(c[1] - goal[1])
+            return dx + dy + (SQRT2 - 2.0) * min(dx, dy)
+
+        cost = {src: 0.0}       # 累计代价 g
+        length = {src: 0.0}     # 沿当前最优路径的几何长度
+        pq = [(heuristic(src), src)]
+        while pq:
+            f, u = heapq.heappop(pq)
+            if u == goal:
+                return length[u]
+            gu = cost[u]
+            if f - heuristic(u) > gu + 1e-9:
+                continue            # 过期的队列项
+            for dy, dx, step in STEPS8:
+                v = (u[0] + dy, u[1] + dx)
+                if 0 <= v[0] < self.h and 0 <= v[1] < self.w and v not in self.blocked:
+                    ng = gu + step * self.mult.get(v, 1.0)
+                    if ng < cost.get(v, math.inf):
+                        cost[v], length[v] = ng, length[u] + step
+                        heapq.heappush(pq, (ng + heuristic(v), v))
+        return length if goal is None else math.inf
+
+    def distances(self, points, method="dijkstra", progress=None):
+        """points 两两之间的路程矩阵 (m)。
+
+        method="astar"：每对点做一次 A*（距离对称，只算一半）；
+        method="dijkstra"：每个点做一次一对全部的搜索，点多时更快，结果相同。
+        progress(i, n) 用于打印进度，可省略。
+        """
         cells = [self.free_cell_near(p[0], p[1]) for p in points]
-        D = [[0.0] * len(points) for _ in points]
+        n = len(points)
+        D = [[0.0] * n for _ in range(n)]
+        if method == "astar":
+            pairs = [(i, j) for i in range(n) for j in range(i + 1, n)]
+            for k, (i, j) in enumerate(pairs, 1):
+                if cells[i] is None or cells[j] is None:
+                    d = math.inf
+                else:
+                    d = self.search(cells[i], cells[j]) * self.res
+                D[i][j] = D[j][i] = d
+                if progress:
+                    progress(k, len(pairs))
+            return D
         for i, ci in enumerate(cells):
-            dist = self._dijkstra(ci) if ci is not None else {}
+            lengths = self.search(ci) if ci is not None else {}
             for j, cj in enumerate(cells):
                 if i != j:
-                    D[i][j] = dist.get(cj, math.inf) * self.res if cj is not None else math.inf
+                    D[i][j] = lengths.get(cj, math.inf) * self.res if cj is not None else math.inf
+            if progress:
+                progress(i + 1, n)
         return D
 
 

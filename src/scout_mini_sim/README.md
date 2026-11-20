@@ -263,10 +263,13 @@ Ctrl+C 时保留当前记录、请求取消导航并向 `/cmd_vel` 发布零速�
 候选视点的好坏只取决于地图和设备，视点之间的路程也一样，所以放到离线算一次：
 
 ```zsh
-/usr/bin/python3 src/scout_mini_sim/scripts/plan_offline.py \
+# 已随 scout_mini_sim 安装（colcon build 后），在仓库根目录运行
+ros2 run scout_mini_sim plan_offline.py \
   --poi maps/warehouse_poi.yaml --map maps/warehouse.yaml --pcd maps/warehouse.pcd \
   --world src/scout_mini_sim/worlds/warehouse.sdf --out maps/patrol_plan.yaml
 ```
+
+不需要启动 ROS 节点；也可以直接 `/usr/bin/python3 src/scout_mini_sim/scripts/plan_offline.py ...`。
 
 对每台设备，在检测面正前方按距离 `--r-min`～`--r-max`、偏角 ±`--phi-max` 采样候选位姿，
 先用硬约束筛掉不能用的：停车格必须已知空闲、离障碍物不小于车身半径 + 余量、从 `--start` 可达、
@@ -274,7 +277,17 @@ Ctrl+C 时保留当前记录、请求取消导航并向 `/cmd_vel` 发布零速�
 （有 `--pcd` 时在三维体素里检查视线，没有时用二维栅格保守检查）。
 剩下的按成像大小、入射角、可见比例、安全余量加权打分（权重见脚本里的 `WEIGHTS`），
 每台设备保留 `--keep` 个，且偏角两两相差至少 `--min-separation`，
-这样最佳视点被临时挡住时，备选来自不同方向。最后在栅格上算出所有入选视点两两之间的路程。
+这样最佳视点被临时挡住时，备选来自不同方向。
+
+每台设备会打印中心高、宽×高和"整面入画需 r ≥ … m"。装得高或尺寸大的设备（如检修面板）
+在 `--r-max`（默认 4 m）内放不进画面时，采样距离自动放宽到"所需距离 + 1 m"，最多到 `--r-limit`（默认 7 m）；
+仍没有可用视点时会打印最可能的原因和改法。
+
+最后在栅格上用**代价感知的 8 邻域 A\***（`--search astar`）算所有入选视点两两之间的路程。
+代价模型按 Nav2 的公式重写：障碍物按车身内切半径 0.31 m 膨胀，膨胀层代价
+`252·exp(−cost_scaling_factor·(d − 内切半径))`，每一步代价 = 步长 × (1 + cost_travel_multiplier × 代价/252)，
+参数默认与 `nav2_params.yaml` 的全局代价地图和 Smac Planner 2D 相同，所以路径同样沿通道中线走。
+`--search dijkstra` 结果相同，点多时更快。
 
 设备检测面的高度和尺寸决定竖直视野约束（相机离地 0.40 m，竖直视场约 42.6°，
 装得高的仪表必须退远才能完整入画），按以下优先级取得：
@@ -292,8 +305,10 @@ ros2 run scout_mini_sim poi_patrol.py --plan maps/patrol_plan.yaml --map maps/wa
 /usr/bin/python3 src/scout_mini_sim/scripts/poi_patrol.py --plan maps/patrol_plan.yaml --dry-run
 ```
 
-离线路程是栅格上的最短路（不含 Nav2 代价地图对通道中线的偏好），比 Nav2 实际路径略短，
-对排序影响很小；起点那一行在线用 Nav2 计算。
+离线路程没有调用 Nav2，而是用同一套代价公式在 Python 里重算，与 Nav2 实际规划长度仍有小差异：
+栅格默认按 0.1 m 降采样（Nav2 用 0.05 m）、没有 Nav2 的路径平滑、只用静态地图（不含实时障碍物）、
+膨胀距离用近似算法。这些差异通常只有几个百分点，而且对所有视点对的影响方向一致，
+对访问顺序影响很小；起点那一行在线用 Nav2 计算。
 
 ### 一键启动仿真、导航和巡检
 

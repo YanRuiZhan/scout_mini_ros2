@@ -90,16 +90,23 @@ def test_blocked_view_is_rejected_and_others_survive(tmp_path):
 
 def test_high_device_needs_distance_for_vertical_fov(tmp_path):
     grid, poi, _ = setup(tmp_path, boxes=[PILLAR])
+    tall = {"z": 1.5, "w": 0.3, "h": 0.4}        # face 1.3..1.7 m high, camera at 0.4 m
     p = params()
-    # face 1.3..1.7 m high, camera at 0.4 m: the top needs ~4 m, more than r_max allows
-    chosen, rejected = po.plan_device(poi, {"z": 1.5, "w": 0.3, "h": 0.4}, grid, None, None, p)
-    assert not chosen and rejected["fov"] > 0
-    # with a farther r_max the planner backs off until the whole face fits
-    chosen, _ = po.plan_device(poi, {"z": 1.5, "w": 0.3, "h": 0.4}, grid, None, None,
-                               params(r_max=6.0))
     half_v = po.vertical_fov() / 2 - p.fov_margin
+    r_fit = po.fit_distance(tall, p)
+    assert r_fit == pytest.approx((1.7 - 0.4) / math.tan(half_v) + po.CAMERA["forward"])
+    # capped at 4 m nothing fits, and the reason says how far it would need to go
+    chosen, rejected = po.plan_device(poi, tall, grid, None, None, params(r_limit=4.0))
+    assert not chosen and rejected["fov"] > 0
+    assert f"{r_fit:.1f} m" in po.explain_failure(r_fit, rejected, params(r_limit=4.0))
+    # by default the range widens up to r_limit, and every pick fits the whole face
+    assert po.distance_range(tall, p)[1] == pytest.approx(min(p.r_limit, r_fit + 1.0))
+    chosen, _ = po.plan_device(poi, tall, grid, None, None, p)
+    assert chosen
     for c in chosen:
         assert math.atan2(1.7 - 0.4, c["r"] - po.CAMERA["forward"]) <= half_v + 1e-9
+    # a low device keeps the normal range
+    assert po.distance_range({"z": 0.6, "w": 0.3, "h": 0.3}, p)[1] == p.r_max
 
 
 def test_voxels_see_over_low_boxes(tmp_path):
@@ -153,7 +160,14 @@ def test_main_writes_plan_with_matrix_and_hashes(tmp_path, capsys):
     assert n == 3 and plan["devices"][0]["viewpoints"] == [0, 1, 2]
     assert plan["devices"][0]["geometry"]["source"] == "poi"
     m = np.array(plan["matrix"])
-    assert m.shape == (n, n) and np.allclose(np.diag(m), 0) and np.allclose(m, m.T, rtol=0.05)
+    assert m.shape == (n, n) and np.allclose(np.diag(m), 0) and np.allclose(m, m.T)
+    assert plan["distance"] == "grid_astar_cost_aware"
+    # the same matrix from one-to-all Dijkstra under the same cost model
+    out2 = tmp_path / "plan2.yaml"
+    assert po.main(["--poi", str(poi), "--map", str(map_yaml), "--start", "10", "5",
+                    "--out", str(out2), "--grid-step", "4", "--search", "dijkstra"]) == 0
+    m2 = np.array(yaml.safe_load(out2.read_text())["matrix"])
+    assert np.allclose(m, m2, rtol=0.02)
     assert all(math.isfinite(d) and d > 5 for d in plan["start"]["row"])
     assert plan["sources"]["map"]["sha1"] == po.file_sha1(*po.map_files(map_yaml))
     assert [v["rank"] for v in plan["viewpoints"]] == [1, 2, 3]

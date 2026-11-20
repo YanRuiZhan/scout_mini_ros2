@@ -144,3 +144,51 @@ def test_grid_map_distance_goes_around_a_wall(tmp_path):
 def test_read_pgm_ascii(tmp_path):
     (tmp_path / "a.pgm").write_text("P2\n# comment\n2 1\n255\n0 254\n")
     assert tp.read_pgm(tmp_path / "a.pgm") == (2, 1, [0, 254])
+
+
+def corridor_map(tmp_path):
+    """20 x 6 m corridor at 0.1 m: walls along y = 0 and y = 6, plus a crate near the lower wall."""
+    w, h = 200, 60
+    pixels = bytearray([254] * (w * h))
+    for col in range(w):
+        for row in (0, h - 1):
+            pixels[row * w + col] = 0
+    for row in range(h - 15, h - 1):            # crate x 9..11 m, y 0..1.5 m
+        for col in range(90, 110):
+            pixels[row * w + col] = 0
+    (tmp_path / "c.pgm").write_bytes(b"P5\n200 60\n255\n" + bytes(pixels))
+    (tmp_path / "c.yaml").write_text("image: c.pgm\nresolution: 0.1\norigin: [0.0, 0.0, 0.0]\n"
+                                     "negate: 0\noccupied_thresh: 0.65\nfree_thresh: 0.25\n")
+    return tmp_path / "c.yaml"
+
+
+COSTMAP = {"inflation_radius": 1.0, "cost_scaling_factor": 2.0, "travel_multiplier": 2.0,
+           "inscribed_radius": 0.31}
+
+
+def test_cost_aware_path_keeps_away_from_obstacles(tmp_path):
+    # Two points 0.6 m above the lower wall: the plain shortest path skims the crate,
+    # the Nav2-like cost model swings out into the corridor, so it is longer.
+    path = corridor_map(tmp_path)
+    plain = tp.GridMap(path, robot_radius=0.31, step=1)
+    costed = tp.GridMap(path, robot_radius=0.31, step=1, costmap=COSTMAP)
+    a, b = (2.0, 2.0), (18.0, 2.0)
+    d_plain = plain.distances([a, b])[0][1]
+    d_cost = costed.distances([a, b], method="astar")[0][1]
+    assert d_plain == pytest.approx(16.0)       # straight line, 0.5 m above the crate
+    assert d_cost > d_plain + 0.05               # detours into the middle of the corridor
+    # A* and Dijkstra find the same optimum under the same costs
+    assert costed.distances([a, b], method="dijkstra")[0][1] == pytest.approx(d_cost, rel=1e-6)
+    # far from every obstacle the multiplier is exactly 1
+    assert costed.mult.get(costed.cell(10.0, 3.6), 1.0) == pytest.approx(1.0)
+    assert costed.mult[costed.cell(10.0, 2.0)] > 1.0
+
+
+def test_astar_matrix_is_symmetric_and_reports_progress(tmp_path):
+    grid = tp.GridMap(corridor_map(tmp_path), robot_radius=0.31, step=2, costmap=COSTMAP)
+    calls = []
+    D = grid.distances([(2, 3), (10, 4), (18, 3)], method="astar",
+                       progress=lambda k, n: calls.append((k, n)))
+    assert calls[-1] == (3, 3)
+    assert all(D[i][j] == D[j][i] for i in range(3) for j in range(3))
+    assert D[0][2] == pytest.approx(D[0][1] + D[1][2], rel=0.1)
