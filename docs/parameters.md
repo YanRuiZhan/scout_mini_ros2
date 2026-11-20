@@ -230,7 +230,9 @@
 
 | 参数 | 默认值 | 说明 |
 |---|---|---|
-| `--poi` | （必填） | POI 配置文件 |
+| `--poi` | — | POI 配置文件（在线生成视点）；与 `--plan` 同时给出时只用于过期检查 |
+| `--plan` | — | `plan_offline.py` 的离线规划；给出后不再使用 `--dist`、`--poi-transform` |
+| `--map` | — | 与 `--plan` 一起用：地图 YAML，检查离线规划是否过期 |
 | `--poi-transform TX TY YAW` | 无 | POI 坐标转到地图坐标；默认出生点建图时为 `22.5 0 -1.5708` |
 | `--dist` | `2.5 3.0 2.0` m | 观测距离候选，依次尝试直到规划成功 |
 | `--only` | 全部 | 只巡检指定编号 |
@@ -246,3 +248,36 @@
 | `--localizer` | `auto` | `auto` 只等定位 TF；也可指定节点名，如 `lidar_localization`、`amcl` |
 | `--out` | `patrol_out` | 输出目录，每次巡检新建子目录 |
 | `--dry-run` | — | 只打印观测位姿，不连接 ROS |
+
+---
+
+## 11. 离线视点规划 `plan_offline.py`
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `--poi` / `--map` | （必填） | POI 文件和二维栅格地图 |
+| `--pcd` | 无 | 建图 PCD，三维遮挡检查；不给则用二维栅格保守检查 |
+| `--world` | 无 | 仿真 world，从模型网格读设备高度和尺寸 |
+| `--start X Y` | `0 0` | 出发位置，用于可达性检查 |
+| `--r-min` / `--r-max` / `--r-step` | `1.5` / `4.0` / `0.25` m | 离检测面的距离范围和步长 |
+| `--phi-max` / `--phi-step` | `60` / `10` ° | 偏离法向的角度范围和步长 |
+| `--robot-radius` / `--clearance-margin` | `0.45` / `0.15` m | 停车位置离障碍物至少 半径 + 余量 |
+| `--min-visibility` | `0.75` | 检测面最低可见比例 |
+| `--target-fill` | `0.35` | 理想的画面占比，成像大小评分以它为中心 |
+| `--keep` / `--min-separation` | `3` / `30` ° | 每台设备保留几个视点、偏角至少相差多少 |
+| `--grid-step` | `2` | 路程计算的栅格降采样倍数，越大越快越粗 |
+
+评分权重 `WEIGHTS`、相机参数 `CAMERA`、按类型的设备尺寸缺省值 `TYPE_DEFAULTS` 在脚本开头，直接修改。
+
+## 12. 一键启动 `sim_patrol.launch.py`
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `map` / `poi` / `plan` | `maps/warehouse.yaml` / `maps/warehouse_poi.yaml` / 空 | 给了 `plan` 时用离线规划 |
+| `patrol` | `true` | `false` 只起仿真和 Nav2 |
+| `patrol_args` | 空 | 附加给 `poi_patrol.py` 的参数 |
+| `nav_delay` / `patrol_delay` | `8` / `5` s | 启动间隔，电脑慢就调大 |
+| `startup_timeout` | `180` s | 巡检脚本等待 Nav2 和定位就绪的最长时间 |
+| `gui` / `rviz` | `true` / `true` | Gazebo 界面、RViz |
+| `localizer` / `initial_pose` / `pcd_map` | `ndt` / `"0 0 0"` / 空 | 同 `navigation.launch.py` |
+| `shutdown_on_exit` | `false` | 巡检结束后一并退出 |

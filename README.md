@@ -58,6 +58,14 @@ prime-run ros2 launch scout_mini_navigation navigation.launch.py map:=maps/wareh
 ros2 run scout_mini_sim poi_patrol.py --poi maps/warehouse_poi.yaml
 ```
 
+第 2～4 步也可以一条命令完成（参数和离线视点规划见
+[仿真说明 · 一键启动](src/scout_mini_sim/README.md#一键启动仿真导航和巡检)）：
+
+```zsh
+prime-run ros2 launch scout_mini_navigation sim_patrol.launch.py \
+  map:=maps/warehouse.yaml poi:=maps/warehouse_poi.yaml
+```
+
 `initial_pose` 默认 `"0 0 0"`：FAST-LIO 从默认出生点建的地图，原点就是出生点。
 出生点或地图不同时传 `initial_pose:="x y yaw"`（map 坐标，米、弧度），
 或传 `initial_pose:=none` 改为在 RViz 用 2D Pose Estimate 手动设置。

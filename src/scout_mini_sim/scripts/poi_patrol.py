@@ -5,9 +5,12 @@
 --------
 1. 读取 POI 配置（YAML），校验每个目标的 id / type / target / normal。
 2. 若 POI 不在 Nav2 的 map 坐标系下，用 --poi-transform 转换坐标。
-3. 对每个 POI，沿目标表面外法向退后若干米，得到"观测位姿"（机器人面朝目标）。
-4. 用 Nav2 规划器求出起点与各观测点两两之间的实际路径长度，交给 tour_planner.py
-   求访问顺序（默认精确最优，--order 可选 greedy / two_opt）。
+3. 对每个 POI 确定"观测位姿"（机器人面朝目标）：
+   - 默认：沿目标表面外法向依次退后 --dist 列出的距离，取第一个 Nav2 能规划到的；
+   - --plan：使用 plan_offline.py 离线评分好的候选视点，按评分依次尝试。
+4. 求访问顺序（tour_planner.py，默认精确最优，--order 可选 greedy / two_opt）：
+   - 默认：用 Nav2 规划器在线求起点与各观测点两两之间的路径长度；
+   - --plan：视点之间用离线路程矩阵，只在线算"起点 -> 各视点"这一行。
 5. 依次：导航 → 到点稳定 → 拍一张新图像 → 写一行 CSV；某个点失败时，
    以当前位置为起点对剩余的点重新排序。
    近点兜底：小车已到视点附近（--near-radius）却停着不动超过 --stuck-time，
@@ -18,14 +21,15 @@
 
 使用前提
 --------
-先启动 sim.launch.py（cameras:=true）和 navigation.launch.py，并在 RViz 完成定位。
+先启动 sim.launch.py（cameras:=true）和 navigation.launch.py，并在 RViz 完成定位；
+或用 sim_patrol.launch.py（scout_mini_navigation 包）一键启动仿真、导航和本脚本。
 无需 ROS 的检查：python3 poi_patrol.py --poi <配置.yaml> --dry-run
 运行与坐标转换说明见 scout_mini_sim/README.md。
 
 代码结构
 --------
 - 纯 Python 部分（不依赖 ROS，可单独测试 / dry-run）：
-  load_pois、view_pose、angle_diff、NearGoalMonitor、order_pois、prepare_pois、write_log
+  load_pois、view_pose、angle_diff、NearGoalMonitor、order_pois、prepare_pois、load_plan、write_log
 - 访问顺序：tour_planner.py（同目录的独立模块，也可单独运行做离线分析）
 - ROS 部分（ROS 相关模块在函数内部才导入，dry-run 时不需要 ROS 环境）：
   wait_for_navigation、run
@@ -52,7 +56,8 @@ import tour_planner  # noqa: E402
 #   order        巡检顺序（从 1 开始）；最后一行 id=HOME 为返回起点
 #   result       导航结果：reached / reached_near / no_plan / rejected / timeout / canceled /
 #                failed / interrupted。reached_near = 近点卡住后由本脚本对准朝向（见 NearGoalMonitor）
-#   view_dist    实际采用的观测距离 (m)
+#   view_dist    实际采用的观测距离 (m)，即视点离检测面的距离
+#   view_rank    采用的是离线规划的第几候选（1 = 评分最高）；未用 --plan 时为空
 #   plan_m       出发前规划的这一段路程 (m)，按 Nav2 路径长度（或 --distance 指定的方式）
 #   goal_*       发给 Nav2 的目标位姿；robot_* 为到达后从 TF 读到的实际位置
 #   pos_err_m    实际位置与目标位置的距离 (m)
@@ -60,7 +65,7 @@ import tour_planner  # noqa: E402
 #   time_s       导航耗时（墙钟时间，s）
 #   image        保存的图片文件名；image_result 为 saved / no_image / error
 LOG_FIELDS = [
-    "order", "id", "type", "result", "view_dist", "plan_m", "goal_x", "goal_y", "goal_yaw",
+    "order", "id", "type", "result", "view_dist", "view_rank", "plan_m", "goal_x", "goal_y", "goal_yaw",
     "robot_x", "robot_y", "pos_err_m", "yaw_err_deg", "time_s", "image", "image_result",
 ]
 
@@ -253,6 +258,63 @@ def prepare_pois(args):
     return pois, source_frame
 
 
+def file_sha1(*paths):
+    """若干文件内容合在一起的 SHA-1（与 plan_offline.py 的算法一致），用于判断离线规划是否过期。"""
+    import hashlib
+    digest = hashlib.sha1()
+    for path in paths:
+        with open(path, "rb") as stream:
+            for chunk in iter(lambda: stream.read(1 << 20), b""):
+                digest.update(chunk)
+    return digest.hexdigest()
+
+
+def load_plan(args):
+    """读取 plan_offline.py 生成的离线规划，返回 (pois, 规划)。
+
+    规划是一个字典：
+      candidates  {设备 id: [候选视点, ...]}，按离线评分从高到低；
+                  每个候选含 x / y / yaw / r / rank，index 为它在离线路程矩阵里的下标
+      matrix      视点两两之间的离线路程 (m)
+    过期检查：给了 --map / --poi 时，比较文件 SHA-1 与生成规划时记录的是否一致，
+    不一致说明地图或设备改过，需要重新运行 plan_offline.py。
+    """
+    with open(args.plan, encoding="utf-8") as stream:
+        data = yaml.safe_load(stream)
+    if not isinstance(data, dict) or data.get("version") != 1:
+        raise ValueError(f"{args.plan} 不是 plan_offline.py 生成的离线规划")
+    if data.get("frame_id") != args.frame:
+        raise ValueError(f"离线规划属于坐标系 {data.get('frame_id')}，与 --frame {args.frame} 不一致")
+
+    # ---- 过期检查 ----
+    sources = data.get("sources") or {}
+    checks = []
+    if args.map:
+        meta = yaml.safe_load(Path(args.map).read_text())
+        checks.append(("地图", file_sha1(args.map, Path(args.map).parent / meta["image"]),
+                       (sources.get("map") or {}).get("sha1")))
+    if args.poi:
+        checks.append(("POI 文件", file_sha1(args.poi), (sources.get("poi") or {}).get("sha1")))
+    for name, now, then in checks:
+        if now != then:
+            raise ValueError(f"{name}在生成离线规划之后改动过，请重新运行 plan_offline.py")
+
+    # ---- 设备与候选视点 ----
+    viewpoints = data["viewpoints"]
+    pois, candidates = [], {}
+    for device in data["devices"]:
+        pois.append({key: device[key] for key in ("id", "type", "target", "normal")})
+        candidates[device["id"]] = [dict(viewpoints[i], index=i) for i in device["viewpoints"]]
+    if args.only is not None:
+        missing = set(args.only) - set(candidates)
+        if missing:
+            raise ValueError("离线规划中不存在这些 id: " + ", ".join(sorted(missing)))
+        pois = [poi for poi in pois if poi["id"] in args.only]
+    if not pois:
+        raise ValueError("没有可巡检的 POI")
+    return pois, {"candidates": candidates, "matrix": data["matrix"]}
+
+
 def write_log(path, rows):
     """整体重写 CSV。每完成一个 POI 调用一次，中途崩溃也能保留已完成的记录。"""
     with open(path, "w", newline="", encoding="utf-8") as stream:
@@ -325,8 +387,12 @@ def wait_for_navigation(nav, buffer, args):
     raise RuntimeError("ROS 已关闭")
 
 
-def run(args, pois):
-    """连接 ROS，按顺序巡检所有 POI；结果写入 <out>/<时间_随机后缀>/。"""
+def run(args, pois, plan=None):
+    """连接 ROS，按顺序巡检所有 POI；结果写入 <out>/<时间_随机后缀>/。
+
+    plan 为 load_plan() 的结果时使用离线候选视点和离线路程矩阵，只在线补算起点那一行；
+    为 None 时按 --dist 在线生成视点、在线求整个路程矩阵。
+    """
     # ROS 相关模块在这里才导入，这样 dry-run 和单元测试不需要 ROS 环境。
     import cv2
     import rclpy
@@ -402,20 +468,31 @@ def run(args, pois):
             pose.pose.orientation.w = math.cos(yaw / 2)
             return pose
 
-        def choose_goal(poi, row):
-            """按 --dist 顺序尝试观测距离，返回第一个能规划出路径的目标；都不行返回 None。
+        def candidates_for(poi):
+            """一台设备的候选视点，按优先顺序排列。
 
-            例如目标前 2.5 m 处被货架挡住，就退到 3.0 m、2.0 m 再试。
+            有离线规划：plan_offline.py 评分最高的几个（来自不同方向）；
+            没有：按 --dist 列出的距离，在检测面正前方依次生成。
             """
-            for dist in args.dist:
-                x, y, yaw = view_pose(poi, dist)
-                candidate = make_pose(x, y, yaw)
-                # use_start=False：从机器人当前位姿规划，只用来检查这个观测点能否到达。
-                path = nav.getPath(PoseStamped(), candidate, use_start=False)
+            if plan is not None:
+                return plan["candidates"].get(poi["id"], [])
+            return [dict(zip(("x", "y", "yaw"), view_pose(poi, dist)), r=dist, rank="", index=None)
+                    for dist in args.dist]
+
+        def choose_goal(poi, row):
+            """按优先顺序尝试候选视点，返回 (第一个能规划出路径的目标, 候选)；都不行返回 (None, None)。
+
+            例如最佳视点此刻被临时堆放的货物挡住（Nav2 规划不过去），就换下一个候选。
+            """
+            for cand in candidates_for(poi):
+                goal = make_pose(cand["x"], cand["y"], cand["yaw"])
+                # use_start=False：从机器人当前位姿规划，只用来检查这个视点能否到达。
+                path = nav.getPath(PoseStamped(), goal, use_start=False)
                 if path is not None and path.poses:
-                    row.update(view_dist=dist, goal_x=x, goal_y=y, goal_yaw=yaw)
-                    return candidate
-            return None
+                    row.update(view_dist=cand["r"], view_rank=cand["rank"],
+                               goal_x=cand["x"], goal_y=cand["y"], goal_yaw=cand["yaw"])
+                    return goal, cand
+            return None, None
 
         def robot_pose():
             """当前机器人位姿 (x, y, yaw)，取自 TF（--frame -> --base-frame）；没有 TF 时返回 None。"""
@@ -573,25 +650,38 @@ def run(args, pois):
         # ------------------------------------------------------------------
         # 出发前规划：选观测点 -> 求距离矩阵 -> tour_planner 排序
         # ------------------------------------------------------------------
-        goals, views, plan_rows = {}, [], []
+        goals, views, plan_rows, offline_index = {}, [], [], []
         for poi in pois:
             row = dict.fromkeys(LOG_FIELDS, "")
             row.update(id=poi["id"], type=poi["type"], result="error")
-            goal = choose_goal(poi, row)
+            goal, cand = choose_goal(poi, row)
             if goal is None:
                 row.update(order="-", result="no_plan")
-                nav.get_logger().warning(f"{poi['id']}: 所有候选距离均无路径，跳过")
+                nav.get_logger().warning(f"{poi['id']}: 所有候选视点均无路径，跳过")
                 rows.append(row)
                 continue
             goals[poi["id"]] = goal
             views.append((row["goal_x"], row["goal_y"], row["goal_yaw"]))
             plan_rows.append((poi, row))
+            offline_index.append(cand["index"])
         start = (start_xy[0], start_xy[1], home[2])
-        nav.get_logger().info(f"计算 {len(views) + 1} 个位置两两之间的路径长度（{args.distance}）…")
         quiet(True)
         try:
-            D = tour_planner.distance_matrix([start] + views, planned_distance,
-                                             symmetric=args.distance == "nav")
+            if plan is None:
+                # 在线：起点和所有视点两两求 Nav2 路径长度
+                nav.get_logger().info(
+                    f"计算 {len(views) + 1} 个位置两两之间的路径长度（{args.distance}）…")
+                D = tour_planner.distance_matrix([start] + views, planned_distance,
+                                                 symmetric=args.distance == "nav")
+            else:
+                # 离线矩阵 + 在线补算"起点 -> 各视点"这一行（起点每次可能不同）
+                nav.get_logger().info(f"使用离线路程矩阵，在线计算起点到 {len(views)} 个视点的路径长度…")
+                n = len(views)
+                D = [[0.0] * (n + 1) for _ in range(n + 1)]
+                for i in range(n):
+                    D[0][i + 1] = D[i + 1][0] = planned_distance(start, views[i])
+                    for j in range(n):
+                        D[i + 1][j + 1] = float(plan["matrix"][offline_index[i]][offline_index[j]])
         finally:
             quiet(False)
         plan = tour_planner.plan_tour(start, views, method=args.order,
@@ -719,10 +809,37 @@ def run(args, pois):
 # 三、命令行入口
 # ============================================================================
 
+def dry_run_plan(pois, plan, args):
+    """不连 ROS，按离线规划打印首选视点和访问顺序（起点那一行用直线距离近似）。"""
+    start = (0.0, 0.0) if args.start_x is None else (args.start_x, args.start_y)
+    usable = [(poi, plan["candidates"][poi["id"]][0]) for poi in pois if plan["candidates"][poi["id"]]]
+    skipped = [poi["id"] for poi in pois if not plan["candidates"][poi["id"]]]
+    n = len(usable)
+    D = [[0.0] * (n + 1) for _ in range(n + 1)]
+    for i, (_, a) in enumerate(usable):
+        D[0][i + 1] = D[i + 1][0] = math.dist(start, (a["x"], a["y"]))
+        for j, (_, b) in enumerate(usable):
+            D[i + 1][j + 1] = float(plan["matrix"][a["index"]][b["index"]])
+    order = tour_planner.plan_tour(start, [(c["x"], c["y"]) for _, c in usable], method=args.order,
+                                   return_home=args.return_home, matrix=D)
+    print(f"离线规划: {args.plan}；排序起点: {start}；方法: {order.method}（起点一行为直线距离）")
+    print("order  id       rank   view_x   view_y   yaw(rad)   r(m)  phi(°)  score   leg_m")
+    for index, (k, leg) in enumerate(zip(order.order, order.legs), 1):
+        poi, c = usable[k]
+        print(f"{index:5d}  {poi['id']:<8} {c['rank']:4d} {c['x']:8.2f} {c['y']:8.2f} {c['yaw']:8.3f}"
+              f" {c['r']:6.2f} {c['phi_deg']:7.1f} {c['score']:6.3f} {leg:7.1f}")
+    if args.return_home:
+        print(f"{'':5}  {'HOME':<8} {'':4} {start[0]:8.2f} {start[1]:8.2f}"
+              f" {'':8} {'':6} {'':7} {'':6} {order.legs[-1]:7.1f}")
+    print(f"合计 {order.total:.1f} m" + (f"；没有可用视点：{', '.join(skipped)}" if skipped else ""))
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Scout Mini POI 巡检 (ROS 2 Humble / Nav2)")
     # --- 输入与观测 ---
-    parser.add_argument("--poi", required=True, help="包含 pois 清单的 YAML 文件")
+    parser.add_argument("--poi", help="包含 pois 清单的 YAML 文件；与 --plan 同时给出时只用于过期检查")
+    parser.add_argument("--plan", help="plan_offline.py 生成的离线规划（候选视点 + 路程矩阵）；"
+                                       "给出后不再使用 --dist / --poi-transform")
+    parser.add_argument("--map", help="与 --plan 一起用：Nav2 的地图 YAML，用于检查离线规划是否过期")
     parser.add_argument("--only", nargs="+", help="只巡检这些编号，如 PG-W01 AP-W03")
     parser.add_argument("--dist", type=float, nargs="+", default=[2.5, 3.0, 2.0],
                         help="观测距离候选 (m)，按顺序尝试；默认兼顾低位水平相机视野")
@@ -777,7 +894,19 @@ def main(argv=None):
         if not all(math.isfinite(value) for value in coordinates + (args.poi_transform or [])):
             raise ValueError("起点及坐标转换参数必须为有限数")
 
-        pois, source_frame = prepare_pois(args)
+        if args.plan:
+            pois, plan = load_plan(args)
+            source_frame = args.frame
+        elif args.poi:
+            pois, source_frame = prepare_pois(args)
+            plan = None
+        else:
+            raise ValueError("需要 --poi（在线生成视点）或 --plan（使用离线规划）")
+
+        # ---- dry-run + 离线规划：打印每台设备的首选视点和按离线矩阵求出的顺序 ----
+        if args.dry_run and plan is not None:
+            dry_run_plan(pois, plan, args)
+            return 0
 
         # ---- dry-run：只打印排序后的观测位姿，用来检查配置和坐标转换 ----
         if args.dry_run:
@@ -795,8 +924,8 @@ def main(argv=None):
             print(f"合计 {plan.total:.1f} m")
             return 0
 
-        run(args, pois)
-    except (OSError, ValueError, RuntimeError, yaml.YAMLError) as error:
+        run(args, pois, plan)
+    except (OSError, ValueError, KeyError, RuntimeError, yaml.YAMLError) as error:
         print(f"巡检错误: {error}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:

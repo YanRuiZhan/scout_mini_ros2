@@ -257,3 +257,56 @@ ros2 run scout_mini_sim poi_patrol.py --poi /绝对路径/poi_in_map.yaml \
 Ctrl+C 时保留当前记录、请求取消导航并向 `/cmd_vel` 发布零速度。
 本轮适配的自动测试没有验证 Gazebo 中整条路线的可达性，首次请用 `--only` 单点验证。
 
+
+### 离线视点规划（`plan_offline.py`）
+
+候选视点的好坏只取决于地图和设备，视点之间的路程也一样，所以放到离线算一次：
+
+```zsh
+/usr/bin/python3 src/scout_mini_sim/scripts/plan_offline.py \
+  --poi maps/warehouse_poi.yaml --map maps/warehouse.yaml --pcd maps/warehouse.pcd \
+  --world src/scout_mini_sim/worlds/warehouse.sdf --out maps/patrol_plan.yaml
+```
+
+对每台设备，在检测面正前方按距离 `--r-min`～`--r-max`、偏角 ±`--phi-max` 采样候选位姿，
+先用硬约束筛掉不能用的：停车格必须已知空闲、离障碍物不小于车身半径 + 余量、从 `--start` 可达、
+设备上下沿和左右沿都在相机视野内、检测面可见比例不低于 `--min-visibility`
+（有 `--pcd` 时在三维体素里检查视线，没有时用二维栅格保守检查）。
+剩下的按成像大小、入射角、可见比例、安全余量加权打分（权重见脚本里的 `WEIGHTS`），
+每台设备保留 `--keep` 个，且偏角两两相差至少 `--min-separation`，
+这样最佳视点被临时挡住时，备选来自不同方向。最后在栅格上算出所有入选视点两两之间的路程。
+
+设备检测面的高度和尺寸决定竖直视野约束（相机离地 0.40 m，竖直视场约 42.6°，
+装得高的仪表必须退远才能完整入画），按以下优先级取得：
+POI 文件里的 `z`（中心离地高度）和 `size: {w, h}` > `--world` 读模型网格 > 脚本里按类型的缺省值。
+缺省值只是占位，实车请实测后写进 POI 文件。每台设备用了哪种来源，运行时会打印，也写在输出文件里。
+
+巡检时用 `--plan` 读取：每台设备按评分依次尝试候选视点（此刻规划不过去就换下一个），
+视点之间用离线路程，只在线计算"起点 → 各视点"这一行，启动时的规划从几十次 Nav2 调用减到十次左右。
+同时给 `--map` 时会核对地图的 SHA-1，地图或 POI 改过就拒绝运行并提示重新规划。
+CSV 的 `view_rank` 记录用的是第几候选。
+
+```zsh
+ros2 run scout_mini_sim poi_patrol.py --plan maps/patrol_plan.yaml --map maps/warehouse.yaml
+# 不连 ROS 预览：首选视点和按离线路程求出的顺序
+/usr/bin/python3 src/scout_mini_sim/scripts/poi_patrol.py --plan maps/patrol_plan.yaml --dry-run
+```
+
+离线路程是栅格上的最短路（不含 Nav2 代价地图对通道中线的偏好），比 Nav2 实际路径略短，
+对排序影响很小；起点那一行在线用 Nav2 计算。
+
+### 一键启动仿真、导航和巡检
+
+```zsh
+prime-run ros2 launch scout_mini_navigation sim_patrol.launch.py \
+  map:=maps/warehouse.yaml poi:=maps/warehouse_poi.yaml
+# 使用离线规划
+prime-run ros2 launch scout_mini_navigation sim_patrol.launch.py \
+  map:=maps/warehouse.yaml plan:=maps/patrol_plan.yaml
+```
+
+依次启动仿真 → `nav_delay`（默认 8 s）后启动 Nav2 和定位 → 再过 `patrol_delay`（默认 5 s）启动巡检。
+巡检脚本本身还会等到 Nav2 激活、定位 TF 就绪（`startup_timeout`，默认 180 s），延时只是错开启动高峰。
+其它参数：`patrol:=false` 只起仿真和导航，`patrol_args:="--only PG-W01 --order greedy"` 附加巡检参数，
+`gui:=false` 关闭 Gazebo 界面省资源，`shutdown_on_exit:=true` 巡检结束后一并退出。
+相对路径相对于运行命令时的当前目录，请在仓库根目录运行。
