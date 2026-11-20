@@ -33,3 +33,15 @@ def test_missing_inputs_fail_early(tmp_path):
         launch.existing_path(str(tmp_path / "nope.yaml"), "地图 map")
     (tmp_path / "m.yaml").write_text("x")
     assert launch.existing_path(str(tmp_path / "m.yaml"), "地图") == str((tmp_path / "m.yaml").resolve())
+
+
+def test_world_is_always_passed_to_the_simulation(tmp_path):
+    # An empty world would be inherited by sim.launch.py and start Gazebo with no world at all.
+    default = tmp_path / "warehouse.sdf"
+    args = launch.sim_arguments("true", "", default)
+    assert args["world"] == str(default) and args["rviz"] == "false" and args["cameras"] == "true"
+    custom = tmp_path / "other.sdf"
+    custom.write_text("<sdf/>")
+    assert launch.sim_arguments("false", str(custom), default)["world"] == str(custom.resolve())
+    with pytest.raises(RuntimeError, match="不存在"):
+        launch.sim_arguments("true", str(tmp_path / "missing.sdf"), default)

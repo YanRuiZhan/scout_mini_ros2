@@ -46,6 +46,17 @@ def existing_path(text, what):
     return str(path)
 
 
+def sim_arguments(gui, world, default_world):
+    """传给 sim.launch.py 的参数。world 必须总是显式给出（绝对路径）。
+
+    IncludeLaunchDescription 会把本文件的 launch 参数继承给被包含的文件：本文件的 world 默认为空，
+    若不显式传，sim.launch.py 会继承到空字符串，Gazebo 以 `ign gazebo ""` 启动，
+    停在"快速开始"界面——既没有仓库场景，也生成不了小车。
+    """
+    return {"gui": gui, "rviz": "false", "cameras": "true",
+            "world": existing_path(world, "world") if world else str(default_world)}
+
+
 def patrol_command(script, map_file, poi="", plan="", startup_timeout=180.0, extra=""):
     """组装巡检脚本的命令行。
 
@@ -76,9 +87,7 @@ def launch_all(context):
     map_file = existing_path(arg("map"), "地图 map")
 
     # ---- 1. 仿真：Gazebo + 机器人 + 桥接 + EKF（RViz 用 Nav2 的那个）----
-    sim_args = {"gui": arg("gui"), "rviz": "false", "cameras": "true"}
-    if arg("world"):
-        sim_args["world"] = existing_path(arg("world"), "world")
+    sim_args = sim_arguments(arg("gui"), arg("world"), sim_share / "worlds" / "warehouse.sdf")
     actions = [IncludeLaunchDescription(
         PythonLaunchDescriptionSource(str(sim_share / "launch" / "sim.launch.py")),
         launch_arguments=sim_args.items(),
