@@ -218,7 +218,27 @@ ros2 run scout_mini_sim poi_patrol.py --poi /绝对路径/poi_in_map.yaml \
 相机若以 `cameras:=false` 关闭，会记录 `image_result=no_image`。
 
 所有点巡检完后（无论各点成败），默认导航回出发时的位置和朝向，CSV 最后一行
-`id=HOME` 记录返回结果；`--no-return-home` 可关闭。排序仍为贪心最近邻，返回起点是追加的最后一段。
+`id=HOME` 记录返回结果；`--no-return-home` 可关闭。
+
+**访问顺序**由独立模块 [`scripts/tour_planner.py`](scripts/tour_planner.py) 决定。出发前，脚本先为每个
+设备选定观测点，再用 Nav2 规划器（`use_start=True`）求起点与各观测点两两之间的实际路径长度，
+交给规划器求顺序；CSV 的 `plan_m` 列记录每段的规划路程。某个点失败时，以当前位置为起点
+对剩余的点重新排序，终点仍为出发点。
+
+| 参数 | 说明 |
+|---|---|
+| `--order auto`（默认） | 点数 ≤ 13 时用 `exact`，否则用 `two_opt` |
+| `--order exact` | Held-Karp 动态规划，精确最优（含返回起点） |
+| `--order two_opt` | 贪心结果再做 2-opt 改进 |
+| `--order greedy` | 贪心最近邻（旧版行为，用于对比） |
+| `--distance nav`（默认） / `euclidean` | 排序用 Nav2 路径长度 / 直线距离 |
+
+`--dry-run` 不连接 ROS，按直线距离给出顺序和各段长度。按地图上的实际路径长度离线比较各方法：
+
+```zsh
+/usr/bin/python3 src/scout_mini_sim/scripts/tour_planner.py \
+  --poi maps/warehouse_poi.yaml --map maps/warehouse.yaml --start 0 0 --method all
+```
 
 每次巡检在 `patrol_out/日期_时间_随机后缀/` 下保存 PNG 和 `patrol_log.csv`，
 每完成一个点就写入 CSV。`result` 区分 `reached`、`no_plan`、`rejected`、

@@ -97,11 +97,12 @@ def test_empty_config_is_rejected_before_ros(tmp_path, capsys):
     assert "没有可巡检" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("mode, return_home", [
-    ("reached", False), ("rejected", False), ("timeout", False), ("no_plan", False),
-    ("interrupted", False), ("reached", True), ("no_plan", True), ("interrupted", True),
+@pytest.mark.parametrize("mode, return_home, count", [
+    ("reached", False, 1), ("rejected", False, 1), ("timeout", False, 1), ("no_plan", False, 1),
+    ("interrupted", False, 1), ("reached", True, 1), ("no_plan", True, 1), ("interrupted", True, 1),
+    ("timeout", False, 3), ("reached", True, 3),
 ])
-def test_patrol_records_and_cancels_without_robot(tmp_path, monkeypatch, mode, return_home):
+def test_patrol_records_and_cancels_without_robot(tmp_path, monkeypatch, mode, return_home, count):
     # Real Humble message classes + CvBridge/OpenCV, fake only the navigation/TF
     # transport. No DDS node is created, and no velocity is sent to a robot.
     rclpy = pytest.importorskip("rclpy")
@@ -111,7 +112,8 @@ def test_patrol_records_and_cancels_without_robot(tmp_path, monkeypatch, mode, r
     from geometry_msgs.msg import TransformStamped
     from sensor_msgs.msg import Image
 
-    state = SimpleNamespace(cancel=0, spin=0, closed=False, stopped=0, ticks=0, callback=None)
+    state = SimpleNamespace(cancel=0, spin=0, closed=False, stopped=0, ticks=0, callback=None,
+                            paths=[])
     goals = []
     transform = TransformStamped()
     transform.transform.translation.x = 1.0
@@ -138,8 +140,11 @@ def test_patrol_records_and_cancels_without_robot(tmp_path, monkeypatch, mode, r
             return SimpleNamespace(info=lambda *a: None, warning=lambda *a: None, error=lambda *a: None)
 
         def getPath(self, start, goal, use_start):
-            assert use_start is False
-            return None if mode == "no_plan" else SimpleNamespace(poses=[goal])
+            # use_start=False: reachability from the robot; True: pairwise lengths for ordering
+            state.paths.append(use_start)
+            if mode == "no_plan":
+                return None
+            return SimpleNamespace(poses=[start, goal] if use_start else [goal])
 
         def goToPose(self, goal):
             goals.append(goal)
@@ -184,29 +189,59 @@ def test_patrol_records_and_cancels_without_robot(tmp_path, monkeypatch, mode, r
                            start_x=None, start_y=None, out=str(tmp_path), dist=[2.5],
                            cmd_vel_topic="/cmd_vel", image_topic="/camera/color/image_raw",
                            timeout=0.005, settle_time=0, image_timeout=3,
-                           return_home=return_home)
+                           return_home=return_home, order="auto", distance="nav")
+    pois = [dict(sample_poi(), id=f"P{i}", target={"x": 1.0 + 4 * i, "y": 2.0}) for i in range(count)]
     if mode == "interrupted":
         with pytest.raises(KeyboardInterrupt):
-            patrol.run(args, [sample_poi()])
+            patrol.run(args, pois)
     else:
-        patrol.run(args, [sample_poi()])
+        patrol.run(args, pois)
     with next(tmp_path.glob("*/patrol_log.csv")).open() as stream:
         all_rows = list(csv.DictReader(stream))
     row = all_rows[0]
     if return_home and mode != "interrupted":
         # Even after a failed POI the robot heads back to where it started.
         home = all_rows[-1]
-        assert len(all_rows) == 2 and home["id"] == "HOME" and home["result"] == "reached"
+        assert len(all_rows) == count + 1 and home["id"] == "HOME" and home["result"] == "reached"
         assert (float(home["goal_x"]), float(home["goal_y"])) == (1.0, 4.5)
         last = goals[-1].pose
         assert (last.position.x, last.position.y) == (1.0, 4.5)
     else:
-        assert len(all_rows) == 1
+        assert len(all_rows) == (1 if mode == "interrupted" else count)
+    if count == 3:
+        visited = [r["id"] for r in all_rows[:3]]
+        if return_home:
+            # a closed tour has the same length either way round
+            assert visited in (["P0", "P1", "P2"], ["P2", "P1", "P0"])
+        else:
+            # robot starts next to P0, so the open tour sweeps P0 -> P1 -> P2
+            assert visited == ["P0", "P1", "P2"]
+    if mode == "timeout" and count == 3:
+        # 6 pairwise lengths up front; after the first failure the two remaining points are
+        # re-ordered from the robot's pose (2 queries); a single remaining point needs none
+        assert state.paths.count(True) == 3 * 4 // 2 + 2
+    if mode != "no_plan":
+        # the viewpoint is checked from the robot, then the ordering asks Nav2 for path lengths
+        assert state.paths[0] is False and True in state.paths
+        assert row["plan_m"] != ""
     assert row["result"] == mode
     assert state.closed
+    # the fake navigator completes every task after the first cancel, so one cancel at most
     assert state.cancel == (1 if mode in ("timeout", "interrupted") else 0)
     if mode == "reached":
         assert row["image_result"] == "saved" and state.spin >= 2
         image = cv2.imread(str(next(tmp_path.glob("*/*.png"))))
         assert image[0, 0].tolist() == [0, 0, 255]
-        assert float(row["pos_err_m"]) == 0
+        if count == 1:      # the fake robot never leaves its start pose
+            assert float(row["pos_err_m"]) == 0
+
+
+def test_dry_run_reports_order_and_length(capsys):
+    args = ["--poi", str(CONFIG), "--start-x", "0", "--start-y", "-22.5", "--dry-run"]
+    assert patrol.main(args) == 0
+    exact = capsys.readouterr().out
+    assert patrol.main(args + ["--order", "greedy"]) == 0
+    greedy = capsys.readouterr().out
+    total = [float(text.strip().splitlines()[-1].split()[1]) for text in (exact, greedy)]
+    assert total[0] < total[1]            # exact never loses to greedy on the same distances
+    assert "HOME" in exact and "exact" in exact

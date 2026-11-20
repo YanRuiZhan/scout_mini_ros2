@@ -6,8 +6,10 @@
 1. 读取 POI 配置（YAML），校验每个目标的 id / type / target / normal。
 2. 若 POI 不在 Nav2 的 map 坐标系下，用 --poi-transform 转换坐标。
 3. 对每个 POI，沿目标表面外法向退后若干米，得到"观测位姿"（机器人面朝目标）。
-4. 从机器人当前位置出发，按最近邻顺序排列 POI，减少来回跑。
-5. 依次：Nav2 规划 → 导航 → 到点稳定 → 拍一张新图像 → 写一行 CSV。
+4. 用 Nav2 规划器求出起点与各观测点两两之间的实际路径长度，交给 tour_planner.py
+   求访问顺序（默认精确最优，--order 可选 greedy / two_opt）。
+5. 依次：导航 → 到点稳定 → 拍一张新图像 → 写一行 CSV；某个点失败时，
+   以当前位置为起点对剩余的点重新排序。
 6. 全部巡检完后导航回出发时的位姿（--no-return-home 可关闭），也记一行 CSV。
 7. 结束或 Ctrl+C 时取消导航目标，并向 /cmd_vel 发零速度停车。
 
@@ -21,6 +23,7 @@
 --------
 - 纯 Python 部分（不依赖 ROS，可单独测试 / dry-run）：
   load_pois、view_pose、order_nearest、prepare_pois、write_log
+- 访问顺序：tour_planner.py（同目录的独立模块，也可单独运行做离线分析）
 - ROS 部分（ROS 相关模块在函数内部才导入，dry-run 时不需要 ROS 环境）：
   wait_for_navigation、run
 - 命令行入口：main
@@ -37,17 +40,22 @@ import time
 
 import yaml
 
+# tour_planner.py 与本脚本在同一目录（源码目录或安装后的 lib/scout_mini_sim）
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import tour_planner  # noqa: E402
+
 
 # CSV 日志的列，每个 POI 一行：
 #   order        巡检顺序（从 1 开始）；最后一行 id=HOME 为返回起点
 #   result       导航结果：reached / no_plan / rejected / timeout / canceled / failed / interrupted
 #   view_dist    实际采用的观测距离 (m)
+#   plan_m       出发前规划的这一段路程 (m)，按 Nav2 路径长度（或 --distance 指定的方式）
 #   goal_*       发给 Nav2 的目标位姿；robot_* 为到达后从 TF 读到的实际位置
 #   pos_err_m    实际位置与目标位置的距离 (m)
 #   time_s       导航耗时（墙钟时间，s）
 #   image        保存的图片文件名；image_result 为 saved / no_image / error
 LOG_FIELDS = [
-    "order", "id", "type", "result", "view_dist", "goal_x", "goal_y", "goal_yaw",
+    "order", "id", "type", "result", "view_dist", "plan_m", "goal_x", "goal_y", "goal_yaw",
     "robot_x", "robot_y", "pos_err_m", "time_s", "image", "image_result",
 ]
 
@@ -127,19 +135,24 @@ def yaw_from_quaternion(q):
     return math.atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z))
 
 
-def order_nearest(pois, start_xy, dist):
-    """贪心最近邻排序：每次去离当前位置最近的观测点。不修改输入列表。
+def order_pois(pois, start_xy, dist, method="auto", return_home=True):
+    """按直线距离排列 POI（dry-run 和测试用；正式巡检用 Nav2 路径长度，见 run）。"""
+    views = [view_pose(poi, dist)[:2] for poi in pois]
+    plan = tour_planner.plan_tour(start_xy, views, method=method, return_home=return_home)
+    return [pois[k] for k in plan.order], plan
 
-    这不是最优路线（旅行商问题），且用的是直线距离而非实际路径长度，
-    但对少量 POI 足够简单有效。
-    """
-    left, ordered, current = list(pois), [], start_xy
-    while left:
-        nxt = min(left, key=lambda poi: math.dist(view_pose(poi, dist)[:2], current))
-        left.remove(nxt)
-        ordered.append(nxt)
-        current = view_pose(nxt, dist)[:2]
-    return ordered
+
+def order_nearest(pois, start_xy, dist):
+    """贪心最近邻（直线距离、不回起点），保留给旧的调用方。不修改输入列表。"""
+    return order_pois(pois, start_xy, dist, method="greedy", return_home=False)[0]
+
+
+def path_length(path):
+    """nav_msgs/Path 的长度 (m)；没有路径时为 inf。"""
+    if path is None or not path.poses:
+        return math.inf
+    pts = [(p.pose.position.x, p.pose.position.y) for p in path.poses]
+    return sum(math.dist(a, b) for a, b in zip(pts, pts[1:]))
 
 
 def prepare_pois(args):
@@ -317,7 +330,6 @@ def run(args, pois):
             start_xy = (current.transform.translation.x, current.transform.translation.y)
         else:
             start_xy = (args.start_x, args.start_y)  # 仅影响排序，不会重置定位
-        pois = order_nearest(pois, start_xy, args.dist[0])
 
         # 每次任务建一个独立目录（时间 + 随机后缀），避免重跑时覆盖照片和 CSV。
         os.makedirs(args.out, exist_ok=True)
@@ -346,7 +358,7 @@ def run(args, pois):
             for dist in args.dist:
                 x, y, yaw = view_pose(poi, dist)
                 candidate = make_pose(x, y, yaw)
-                # use_start=False：Humble 会忽略 start，从机器人在全局代价地图中的当前位姿规划。
+                # use_start=False：从机器人当前位姿规划，只用来检查这个观测点能否到达。
                 path = nav.getPath(PoseStamped(), candidate, use_start=False)
                 if path is not None and path.poses:
                     row.update(view_dist=dist, goal_x=x, goal_y=y, goal_yaw=yaw)
@@ -420,28 +432,108 @@ def run(args, pois):
             # 4) 停止接收图像，直到下一次拍照
             latest.update(img=None, after_ns=None)
 
+        def planned_distance(a, b):
+            """a -> b 的 Nav2 规划路径长度 (m)，a/b 为 (x, y, yaw)；规划失败为 inf。"""
+            if args.distance == "euclidean":
+                return math.dist(a[:2], b[:2])
+            return path_length(nav.getPath(make_pose(*a), make_pose(*b), use_start=True))
+
+        def quiet(enabled):
+            """getPath 每次调用都会打印日志；求距离矩阵时暂时只保留警告。"""
+            try:
+                from rclpy.logging import LoggingSeverity
+                nav.get_logger().set_level(LoggingSeverity.WARN if enabled else LoggingSeverity.INFO)
+            except (ImportError, AttributeError):
+                pass
+
         # ------------------------------------------------------------------
-        # 主循环：规划 -> 导航 -> 记录位置 -> 拍照 -> 写 CSV
+        # 出发前规划：选观测点 -> 求距离矩阵 -> tour_planner 排序
         # ------------------------------------------------------------------
-        for index, poi in enumerate(pois, 1):
+        goals, views, plan_rows = {}, [], []
+        for poi in pois:
             row = dict.fromkeys(LOG_FIELDS, "")
-            # 默认记为 error；正常流程会覆盖它，异常时就保留 error
-            row.update(order=index, id=poi["id"], type=poi["type"], result="error")
+            row.update(id=poi["id"], type=poi["type"], result="error")
+            goal = choose_goal(poi, row)
+            if goal is None:
+                row.update(order="-", result="no_plan")
+                nav.get_logger().warning(f"{poi['id']}: 所有候选距离均无路径，跳过")
+                rows.append(row)
+                continue
+            goals[poi["id"]] = goal
+            views.append((row["goal_x"], row["goal_y"], row["goal_yaw"]))
+            plan_rows.append((poi, row))
+        start = (start_xy[0], start_xy[1], home[2])
+        nav.get_logger().info(f"计算 {len(views) + 1} 个位置两两之间的路径长度（{args.distance}）…")
+        quiet(True)
+        try:
+            D = tour_planner.distance_matrix([start] + views, planned_distance,
+                                             symmetric=args.distance == "nav")
+        finally:
+            quiet(False)
+        plan = tour_planner.plan_tour(start, views, method=args.order,
+                                      return_home=args.return_home, matrix=[r[:] for r in D])
+        for k in plan.unreachable:
+            poi, row = plan_rows[k]
+            row.update(order="-", result="no_plan")
+            nav.get_logger().warning(f"{poi['id']}: 从起点规划不出路径，跳过")
+            rows.append(row)
+        queue = list(plan.order)          # 剩余待访问点（plan_rows / D 的下标为 k / k+1）
+        leg_plan = dict(zip(queue, plan.legs))
+        home_plan = plan.legs[-1] if plan.return_home and plan.legs else math.nan
+        nav.get_logger().info(
+            f"访问顺序（{plan.method}，预计 {plan.total:.1f} m"
+            + ("，含返回起点" if plan.return_home else "") + "）："
+            + " → ".join(plan_rows[k][0]["id"] for k in queue)
+        )
+        write_log(log_path, rows)
+
+        def replan(from_pose):
+            """失败后以当前位置为起点，对剩余的点重新排序；返回起点那一段仍以出发点为终点。"""
+            nonlocal queue, leg_plan, home_plan
+            if len(queue) < 2:
+                return
+            quiet(True)
+            try:
+                here = [planned_distance(from_pose, views[k]) for k in queue]
+            finally:
+                quiet(False)
+            sub = [[0.0] + here]
+            for i, ki in enumerate(queue):
+                # 第 0 列是"回到起点"：用到出发点的距离，而不是到当前位置的距离
+                sub.append([D[ki + 1][0]] + [D[ki + 1][kj + 1] for kj in queue])
+            again = tour_planner.plan_tour(from_pose, [views[k] for k in queue], method=args.order,
+                                           return_home=args.return_home, matrix=sub)
+            queue = [queue[k] for k in again.order]
+            leg_plan = dict(zip(queue, again.legs))
+            if again.return_home:
+                home_plan = again.legs[-1]
+            nav.get_logger().info("重新排序剩余的点：" + " → ".join(plan_rows[k][0]["id"] for k in queue))
+
+        # ------------------------------------------------------------------
+        # 主循环：导航 -> 记录位置 -> 拍照 -> 写 CSV
+        # ------------------------------------------------------------------
+        index = 0
+        total = len(queue)
+        while queue:
+            k = queue.pop(0)
+            poi, row = plan_rows[k]
+            index += 1
+            row.update(order=index, plan_m=round(leg_plan.get(k, math.nan), 2))
             rows.append(row)
             try:
-                goal = choose_goal(poi, row)
-                if goal is None:
-                    row["result"] = "no_plan"
-                    nav.get_logger().warning(f"{poi['id']}: 所有候选距离均无路径，跳过")
-                    continue
-                nav.get_logger().info(f"[{index}/{len(pois)}] 前往 {poi['id']}")
-                navigate(goal, row)
-                if row["result"] == "rejected":
-                    continue
-                record_position(poi, row)
-                if row["result"] != "reached":
-                    continue  # 没到点就不拍照
-                capture_image(index, poi, row)
+                nav.get_logger().info(f"[{index}/{total}] 前往 {poi['id']}")
+                navigate(goals[poi["id"]], row)
+                if row["result"] != "rejected":
+                    record_position(poi, row)
+                if row["result"] == "reached":
+                    capture_image(index, poi, row)
+                elif queue:
+                    try:
+                        now = buffer.lookup_transform(args.frame, args.base_frame, Time())
+                        replan((now.transform.translation.x, now.transform.translation.y,
+                                yaw_from_quaternion(now.transform.rotation)))
+                    except TransformException:
+                        nav.get_logger().warning("无定位 TF，按原顺序继续")
             except KeyboardInterrupt:
                 row["result"] = "interrupted"
                 raise
@@ -454,8 +546,9 @@ def run(args, pois):
         reached = sum(row["result"] == "reached" for row in rows)
         if args.return_home:
             row = dict.fromkeys(LOG_FIELDS, "")
-            row.update(order=len(rows) + 1, id="HOME", type="return_home", result="error",
-                       goal_x=home[0], goal_y=home[1], goal_yaw=home[2])
+            row.update(order=index + 1, id="HOME", type="return_home", result="error",
+                       goal_x=home[0], goal_y=home[1], goal_yaw=home[2],
+                       plan_m=round(home_plan, 2))
             rows.append(row)
             try:
                 nav.get_logger().info(
@@ -530,6 +623,10 @@ def main(argv=None):
     parser.add_argument("--settle-time", type=float, default=0.5, help="到点后拍照前的静置时间 (s)")
     # --- 输出 ---
     parser.add_argument("--out", default="patrol_out", help="输出根目录，每次任务建立独立子目录")
+    parser.add_argument("--order", default="auto", choices=tour_planner.METHODS,
+                        help="访问顺序：auto（默认，点少时精确最优）、exact、two_opt、greedy")
+    parser.add_argument("--distance", default="nav", choices=("nav", "euclidean"),
+                        help="排序用的距离：nav（默认，Nav2 规划路径长度）或 euclidean（直线）")
     parser.add_argument("--return-home", action=argparse.BooleanOptionalAction, default=True,
                         help="巡检结束后回到出发时的位姿（默认开启；--no-return-home 关闭）")
     parser.add_argument("--dry-run", action="store_true", help="只打印观测位姿，不连接 ROS")
@@ -553,14 +650,17 @@ def main(argv=None):
         # ---- dry-run：只打印排序后的观测位姿，用来检查配置和坐标转换 ----
         if args.dry_run:
             start = (0.0, 0.0) if args.start_x is None else (args.start_x, args.start_y)
-            print(f"坐标系: {source_frame}；观测距离: {args.dist[0]} m；排序起点: {start}")
-            print("order  id       type              view_x   view_y   yaw(rad)")
-            for index, poi in enumerate(order_nearest(pois, start, args.dist[0]), 1):
+            ordered, plan = order_pois(pois, start, args.dist[0], args.order, args.return_home)
+            print(f"坐标系: {source_frame}；观测距离: {args.dist[0]} m；排序起点: {start}；"
+                  f"方法: {plan.method}（直线距离；离线按地图路径长度见 tour_planner.py --map）")
+            print("order  id       type              view_x   view_y   yaw(rad)   leg_m")
+            for index, (poi, leg) in enumerate(zip(ordered, plan.legs), 1):
                 x, y, yaw = view_pose(poi, args.dist[0])
-                print(f"{index:5d}  {poi['id']:<8} {poi['type']:<17} {x:7.2f} {y:7.2f} {yaw:8.3f}")
+                print(f"{index:5d}  {poi['id']:<8} {poi['type']:<17} {x:7.2f} {y:7.2f} {yaw:8.3f} {leg:7.1f}")
             if args.return_home:
                 print(f"{'':5}  {'HOME':<8} {'return_home':<17} {start[0]:7.2f} {start[1]:7.2f}"
-                      "   （回到出发位姿）")
+                      f" {'':8} {plan.legs[-1]:7.1f}")
+            print(f"合计 {plan.total:.1f} m")
             return 0
 
         run(args, pois)
